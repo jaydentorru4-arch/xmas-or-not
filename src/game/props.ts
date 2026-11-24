@@ -444,3 +444,190 @@ export function createWeaponProp(
   };
 }
 
+export interface BatteryProp {
+  id: number;
+  r: number;
+  c: number;
+  collected: boolean;
+  group: THREE.Group;
+  cellGroup: THREE.Group;
+  light: THREE.PointLight;
+}
+
+export function createBatteryProp(
+  id: number,
+  r: number,
+  c: number,
+  worldX: number,
+  worldZ: number,
+  contactShadowTex: THREE.Texture,
+  disposables: { dispose: () => void }[]
+): BatteryProp {
+  const track = <T extends { dispose: () => void }>(item: T): T => {
+    disposables.push(item);
+    return item;
+  };
+
+  const group = new THREE.Group();
+  group.position.set(worldX, 0, worldZ);
+
+  const shadow = new THREE.Mesh(
+    track(new THREE.PlaneGeometry(0.95, 0.95)),
+    track(
+      new THREE.MeshBasicMaterial({
+        map: contactShadowTex,
+        transparent: true,
+        depthWrite: false,
+        opacity: 0.6,
+      })
+    )
+  );
+  shadow.rotation.x = -Math.PI / 2;
+  shadow.position.y = 0.015;
+  group.add(shadow);
+
+  // Floating rotating heavy-duty power cell
+  const cellGroup = new THREE.Group();
+  cellGroup.position.y = 0.78;
+  group.add(cellGroup);
+
+  const casingMat = track(
+    new THREE.MeshStandardMaterial({ color: 0x16202a, roughness: 0.45, metalness: 0.72 })
+  );
+  const copperMat = track(
+    new THREE.MeshStandardMaterial({ color: 0xd99b26, roughness: 0.22, metalness: 0.9 })
+  );
+  const emeraldGlowMat = track(
+    new THREE.MeshStandardMaterial({
+      color: 0x34d399,
+      emissive: 0x10b981,
+      emissiveIntensity: 2.3,
+      roughness: 0.2,
+    })
+  );
+
+  // Bottom dark casing
+  const bottomCap = new THREE.Mesh(track(new THREE.CylinderGeometry(0.17, 0.17, 0.14, 14)), casingMat);
+  bottomCap.position.y = -0.18;
+  cellGroup.add(bottomCap);
+
+  // Glowing emerald charge cylinder core
+  const core = new THREE.Mesh(track(new THREE.CylinderGeometry(0.155, 0.155, 0.28, 14)), emeraldGlowMat);
+  core.position.y = 0.03;
+  cellGroup.add(core);
+
+  // Top collar & brass positive terminal nub
+  const topCap = new THREE.Mesh(track(new THREE.CylinderGeometry(0.17, 0.17, 0.1, 14)), casingMat);
+  topCap.position.y = 0.22;
+  cellGroup.add(topCap);
+
+  const terminal = new THREE.Mesh(track(new THREE.CylinderGeometry(0.065, 0.065, 0.07, 12)), copperMat);
+  terminal.position.y = 0.305;
+  cellGroup.add(terminal);
+
+  const ring = new THREE.Mesh(track(new THREE.TorusGeometry(0.18, 0.018, 6, 16)), copperMat);
+  ring.rotation.x = Math.PI / 2;
+  ring.position.y = 0.03;
+  cellGroup.add(ring);
+
+  const light = new THREE.PointLight(0x10b981, 2.1, 7.5, 1.8);
+  light.position.y = 0.9;
+  group.add(light);
+
+  return {
+    id,
+    r,
+    c,
+    collected: false,
+    group,
+    cellGroup,
+    light,
+  };
+}
+
+export interface ElfTrapProp {
+  id: number;
+  r: number;
+  c: number;
+  triggered: boolean;
+  group: THREE.Group;
+  teethGroup: THREE.Group;
+}
+
+export function createElfTrapProp(
+  id: number,
+  r: number,
+  c: number,
+  worldX: number,
+  worldZ: number,
+  contactShadowTex: THREE.Texture,
+  disposables: { dispose: () => void }[]
+): ElfTrapProp {
+  const track = <T extends { dispose: () => void }>(item: T): T => {
+    disposables.push(item);
+    return item;
+  };
+
+  const group = new THREE.Group();
+  group.position.set(worldX, 0, worldZ);
+
+  const shadow = new THREE.Mesh(
+    track(new THREE.PlaneGeometry(0.9, 0.9)),
+    track(
+      new THREE.MeshBasicMaterial({
+        map: contactShadowTex,
+        transparent: true,
+        depthWrite: false,
+        opacity: 0.55,
+      })
+    )
+  );
+  shadow.rotation.x = -Math.PI / 2;
+  shadow.position.y = 0.015;
+  group.add(shadow);
+
+  const ironMat = track(
+    new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.35, metalness: 0.85 })
+  );
+  const redBaitMat = track(
+    new THREE.MeshStandardMaterial({
+      color: 0xef4444,
+      emissive: 0x991b1b,
+      emissiveIntensity: 1.2,
+      roughness: 0.25,
+    })
+  );
+
+  const baseRing = new THREE.Mesh(track(new THREE.TorusGeometry(0.35, 0.03, 6, 16)), ironMat);
+  baseRing.rotation.x = Math.PI / 2;
+  baseRing.position.y = 0.03;
+  group.add(baseRing);
+
+  const teethGroup = new THREE.Group();
+  teethGroup.position.y = 0.04;
+  group.add(teethGroup);
+
+  for (let i = 0; i < 6; i++) {
+    const angle = (i / 6) * Math.PI * 2;
+    const tooth = new THREE.Mesh(track(new THREE.ConeGeometry(0.035, 0.12, 4)), ironMat);
+    tooth.position.set(Math.cos(angle) * 0.28, 0.06, Math.sin(angle) * 0.28);
+    tooth.rotation.z = Math.cos(angle) * 0.4;
+    tooth.rotation.x = -Math.sin(angle) * 0.4;
+    teethGroup.add(tooth);
+  }
+
+  const bait = new THREE.Mesh(track(new THREE.SphereGeometry(0.08, 10, 10)), redBaitMat);
+  bait.position.y = 0.08;
+  group.add(bait);
+
+  return {
+    id,
+    r,
+    c,
+    triggered: false,
+    group,
+    teethGroup,
+  };
+}
+
+

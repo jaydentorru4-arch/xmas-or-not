@@ -25,13 +25,19 @@ import {
   OperationType,
 } from '../firebase';
 import {
+  applyXpGain,
   ChatMessageData,
   COAT_COLORS,
-  DIFFICULTIES,
   DifficultyId,
+  FriendRecord,
+  FriendStatus,
   GameRoomData,
+  getLevelScaling,
+  HAT_STYLES,
+  HatStyle,
   RoomPlayerData,
   SantaLiveData,
+  SCARF_COLORS,
   SurvivorProfile,
 } from '../game/types';
 
@@ -44,8 +50,33 @@ function sanitizeCoatColor(hex: string): string {
   return /^#[0-9a-fA-F]{6}$/.test(hex) ? hex : COAT_COLORS[0].hex;
 }
 
+function sanitizeScarfColor(hex: string): string {
+  return /^#[0-9a-fA-F]{6}$/.test(hex) ? hex : SCARF_COLORS[0].hex;
+}
+
+function sanitizeHatStyle(raw: string): HatStyle {
+  return HAT_STYLES.some((h) => h.id === raw) ? (raw as HatStyle) : 'hood';
+}
+
 function sanitizeChatText(raw: string): string {
   return raw.trim().slice(0, 240);
+}
+
+function deriveFriendCode(uid: string): string {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let hash = 2166136261;
+  for (let i = 0; i < uid.length; i++) {
+    hash ^= uid.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  let suffix = '';
+  let val = hash >>> 0;
+  for (let i = 0; i < 6; i++) {
+    suffix += alphabet[val % alphabet.length];
+    val = Math.floor(val / alphabet.length) ^ ((uid.charCodeAt(i % uid.length) || 7) * 31);
+    val = val >>> 0;
+  }
+  return `SV-${suffix}`;
 }
 
 function generateRoomId(): string {
@@ -59,6 +90,22 @@ function generateRoomId(): string {
 
 function generateMessageId(): string {
   return `m_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+async function ensureFriendCodeLookup(uid: string, friendCode: string): Promise<void> {
+  try {
+    const codeRef = doc(db, 'friendCodes', friendCode);
+    const snap = await getDoc(codeRef);
+    if (!snap.exists()) {
+      await setDoc(codeRef, {
+        uid,
+        friendCode,
+        createdAt: serverTimestamp(),
+      });
+    }
+  } catch {
+    // Non-fatal if already registered or offline
+  }
 }
 
 export async function signInSurvivorWithGoogle(): Promise<User> {
@@ -96,34 +143,79 @@ export async function loadOrCreateSurvivorProfile(user: User): Promise<SurvivorP
     const pubSnap = await getDoc(pubRef);
     if (pubSnap.exists()) {
       const d = pubSnap.data();
-      return {
+      const friendCode =
+        typeof d.friendCode === 'string' && /^[A-Z0-9_-]{4,16}$/.test(d.friendCode)
+          ? d.friendCode
+          : deriveFriendCode(user.uid);
+      const profile: SurvivorProfile = {
         uid: user.uid,
-        displayName: String(d.displayName || 'Survivor'),
-        coatColor: String(d.coatColor || COAT_COLORS[0].hex),
-        escapes: Number(d.escapes || 0),
-        gamesPlayed: Number(d.gamesPlayed || 0),
+        displayName: sanitizeDisplayName(String(d.displayName || 'Survivor')),
+        coatColor: sanitizeCoatColor(String(d.coatColor || COAT_COLORS[0].hex)),
+        scarfColor: sanitizeScarfColor(String(d.scarfColor || SCARF_COLORS[0].hex)),
+        hatStyle: sanitizeHatStyle(String(d.hatStyle || 'hood')),
+        friendCode,
+        level: Math.max(1, Math.min(50, Number(d.level || 1))),
+        xp: Math.max(0, Number(d.xp || 0)),
+        escapes: Math.max(0, Number(d.escapes || 0)),
+        gamesPlayed: Math.max(0, Number(d.gamesPlayed || 0)),
       };
+
+      // Backfill new customization/level fields for legacy profiles
+      if (
+        d.scarfColor === undefined ||
+        d.hatStyle === undefined ||
+        d.friendCode === undefined ||
+        d.level === undefined ||
+        d.xp === undefined
+      ) {
+        await updateDoc(pubRef, {
+          scarfColor: profile.scarfColor,
+          hatStyle: profile.hatStyle,
+          friendCode: profile.friendCode,
+          level: profile.level,
+          xp: profile.xp,
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      await ensureFriendCodeLookup(user.uid, profile.friendCode);
+      return profile;
     }
 
     const defaultName = sanitizeDisplayName(
       user.displayName || (user.email ? user.email.split('@')[0] : 'Survivor')
     );
     const defaultColor = COAT_COLORS[Math.floor(Math.random() * COAT_COLORS.length)].hex;
+    const defaultScarf = SCARF_COLORS[Math.floor(Math.random() * SCARF_COLORS.length)].hex;
+    const defaultHat: HatStyle = 'hood';
+    const friendCode = deriveFriendCode(user.uid);
 
     await setDoc(pubRef, {
       uid: user.uid,
       displayName: defaultName,
       coatColor: defaultColor,
+      scarfColor: defaultScarf,
+      hatStyle: defaultHat,
+      friendCode,
+      level: 1,
+      xp: 0,
       escapes: 0,
       gamesPlayed: 0,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
 
+    await ensureFriendCodeLookup(user.uid, friendCode);
+
     return {
       uid: user.uid,
       displayName: defaultName,
       coatColor: defaultColor,
+      scarfColor: defaultScarf,
+      hatStyle: defaultHat,
+      friendCode,
+      level: 1,
+      xp: 0,
       escapes: 0,
       gamesPlayed: 0,
     };
@@ -134,17 +226,26 @@ export async function loadOrCreateSurvivorProfile(user: User): Promise<SurvivorP
 
 export async function updateSurvivorAccount(
   uid: string,
-  displayName: string,
-  coatColor: string
+  updates: {
+    displayName: string;
+    coatColor: string;
+    scarfColor: string;
+    hatStyle: HatStyle;
+  }
 ): Promise<SurvivorProfile> {
   const path = `users/${uid}/public/profile`;
-  const cleanName = sanitizeDisplayName(displayName);
-  const cleanColor = sanitizeCoatColor(coatColor);
+  const cleanName = sanitizeDisplayName(updates.displayName);
+  const cleanCoat = sanitizeCoatColor(updates.coatColor);
+  const cleanScarf = sanitizeScarfColor(updates.scarfColor);
+  const cleanHat = sanitizeHatStyle(updates.hatStyle);
+
   try {
     const ref = doc(db, 'users', uid, 'public', 'profile');
     await updateDoc(ref, {
       displayName: cleanName,
-      coatColor: cleanColor,
+      coatColor: cleanCoat,
+      scarfColor: cleanScarf,
+      hatStyle: cleanHat,
       updatedAt: serverTimestamp(),
     });
     const snap = await getDoc(ref);
@@ -152,7 +253,12 @@ export async function updateSurvivorAccount(
     return {
       uid,
       displayName: cleanName,
-      coatColor: cleanColor,
+      coatColor: cleanCoat,
+      scarfColor: cleanScarf,
+      hatStyle: cleanHat,
+      friendCode: String(d.friendCode || deriveFriendCode(uid)),
+      level: Math.max(1, Math.min(50, Number(d.level || 1))),
+      xp: Math.max(0, Number(d.xp || 0)),
       escapes: Number(d.escapes || 0),
       gamesPlayed: Number(d.gamesPlayed || 0),
     };
@@ -161,20 +267,214 @@ export async function updateSurvivorAccount(
   }
 }
 
-export async function recordMatchOutcome(uid: string, escaped: boolean): Promise<void> {
+export async function recordMatchOutcome(
+  uid: string,
+  escaped: boolean,
+  earnedXp: number
+): Promise<{ level: number; xp: number; leveledUp: boolean; escapes: number; gamesPlayed: number } | null> {
   const path = `users/${uid}/public/profile`;
   try {
     const ref = doc(db, 'users', uid, 'public', 'profile');
     const snap = await getDoc(ref);
-    if (!snap.exists()) return;
+    if (!snap.exists()) return null;
     const d = snap.data();
+    const prevLevel = Math.max(1, Math.min(50, Number(d.level || 1)));
+    const prevXp = Math.max(0, Number(d.xp || 0));
+    const progressed = applyXpGain(prevLevel, prevXp, earnedXp);
+    const nextEscapes = Number(d.escapes || 0) + (escaped ? 1 : 0);
+    const nextGames = Number(d.gamesPlayed || 0) + 1;
+
     await updateDoc(ref, {
-      escapes: Number(d.escapes || 0) + (escaped ? 1 : 0),
-      gamesPlayed: Number(d.gamesPlayed || 0) + 1,
+      level: progressed.level,
+      xp: progressed.xp,
+      escapes: nextEscapes,
+      gamesPlayed: nextGames,
+      updatedAt: serverTimestamp(),
+    });
+
+    return {
+      ...progressed,
+      escapes: nextEscapes,
+      gamesPlayed: nextGames,
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+// Friends & Friend Codes
+export function subscribeFriends(
+  uid: string,
+  onFriends: (friends: FriendRecord[]) => void
+): Unsubscribe {
+  const path = `users/${uid}/friends`;
+  const q = query(collection(db, 'users', uid, 'friends'), where('ownerUid', '==', uid));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const list: FriendRecord[] = snap.docs.map((docSnap) => {
+        const d = docSnap.data();
+        return {
+          ownerUid: String(d.ownerUid || uid),
+          friendUid: String(d.friendUid || docSnap.id),
+          displayName: String(d.displayName || 'Survivor'),
+          coatColor: sanitizeCoatColor(String(d.coatColor || COAT_COLORS[0].hex)),
+          scarfColor: sanitizeScarfColor(String(d.scarfColor || SCARF_COLORS[0].hex)),
+          hatStyle: sanitizeHatStyle(String(d.hatStyle || 'hood')),
+          friendCode: String(d.friendCode || ''),
+          level: Math.max(1, Math.min(50, Number(d.level || 1))),
+          status: (d.status as FriendStatus) || 'accepted',
+        };
+      });
+      const order: Record<FriendStatus, number> = {
+        pending_received: 0,
+        accepted: 1,
+        pending_sent: 2,
+      };
+      list.sort((a, b) => order[a.status] - order[b.status] || a.displayName.localeCompare(b.displayName));
+      onFriends(list);
+    },
+    (error) => handleFirestoreError(error, OperationType.LIST, path)
+  );
+}
+
+export async function sendFriendRequestByUid(
+  myProfile: SurvivorProfile,
+  targetUid: string
+): Promise<void> {
+  if (!targetUid || targetUid === myProfile.uid) {
+    throw new Error('You cannot add yourself as a friend.');
+  }
+
+  const targetProfileSnap = await getDoc(doc(db, 'users', targetUid, 'public', 'profile'));
+  if (!targetProfileSnap.exists()) {
+    throw new Error('Survivor profile not found.');
+  }
+  const td = targetProfileSnap.data();
+  const targetName = sanitizeDisplayName(String(td.displayName || 'Survivor'));
+  const targetCoat = sanitizeCoatColor(String(td.coatColor || COAT_COLORS[0].hex));
+  const targetScarf = sanitizeScarfColor(String(td.scarfColor || SCARF_COLORS[0].hex));
+  const targetHat = sanitizeHatStyle(String(td.hatStyle || 'hood'));
+  const targetCode = String(td.friendCode || deriveFriendCode(targetUid));
+  const targetLevel = Math.max(1, Math.min(50, Number(td.level || 1)));
+
+  const myFriendRef = doc(db, 'users', myProfile.uid, 'friends', targetUid);
+  const myExisting = await getDoc(myFriendRef);
+  if (myExisting.exists()) {
+    const status = myExisting.data().status;
+    if (status === 'accepted') throw new Error(`Already friends with ${targetName}.`);
+    if (status === 'pending_sent') throw new Error(`Friend request already sent to ${targetName}.`);
+    if (status === 'pending_received') {
+      await acceptFriendRequest(myProfile, targetUid);
+      return;
+    }
+  }
+
+  try {
+    await setDoc(myFriendRef, {
+      ownerUid: myProfile.uid,
+      friendUid: targetUid,
+      displayName: targetName,
+      coatColor: targetCoat,
+      scarfColor: targetScarf,
+      hatStyle: targetHat,
+      friendCode: targetCode,
+      level: targetLevel,
+      status: 'pending_sent',
+      createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
   } catch (error) {
-    handleFirestoreError(error, OperationType.UPDATE, path);
+    handleFirestoreError(error, OperationType.CREATE, `users/${myProfile.uid}/friends/${targetUid}`);
+  }
+
+  const theirFriendRef = doc(db, 'users', targetUid, 'friends', myProfile.uid);
+  try {
+    await setDoc(theirFriendRef, {
+      ownerUid: targetUid,
+      friendUid: myProfile.uid,
+      displayName: sanitizeDisplayName(myProfile.displayName),
+      coatColor: sanitizeCoatColor(myProfile.coatColor),
+      scarfColor: sanitizeScarfColor(myProfile.scarfColor),
+      hatStyle: sanitizeHatStyle(myProfile.hatStyle),
+      friendCode: myProfile.friendCode,
+      level: Math.max(1, Math.min(50, myProfile.level)),
+      status: 'pending_received',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, `users/${targetUid}/friends/${myProfile.uid}`);
+  }
+}
+
+export async function sendFriendRequestByCode(
+  myProfile: SurvivorProfile,
+  rawCode: string
+): Promise<void> {
+  const code = rawCode.trim().toUpperCase();
+  if (!/^[A-Z0-9_-]{4,16}$/.test(code)) {
+    throw new Error('Enter a valid Friend Code (e.g. SV-XXXXXX).');
+  }
+  if (code === myProfile.friendCode) {
+    throw new Error('That is your own Friend Code.');
+  }
+
+  const snap = await getDoc(doc(db, 'friendCodes', code));
+  if (!snap.exists()) {
+    throw new Error(`No survivor found with Friend Code "${code}".`);
+  }
+  const targetUid = String(snap.data().uid || '');
+  await sendFriendRequestByUid(myProfile, targetUid);
+}
+
+export async function acceptFriendRequest(
+  myProfile: SurvivorProfile,
+  friendUid: string
+): Promise<void> {
+  const targetSnap = await getDoc(doc(db, 'users', friendUid, 'public', 'profile'));
+  const td = targetSnap.data() || {};
+
+  try {
+    await updateDoc(doc(db, 'users', myProfile.uid, 'friends', friendUid), {
+      status: 'accepted',
+      displayName: sanitizeDisplayName(String(td.displayName || 'Survivor')),
+      coatColor: sanitizeCoatColor(String(td.coatColor || COAT_COLORS[0].hex)),
+      scarfColor: sanitizeScarfColor(String(td.scarfColor || SCARF_COLORS[0].hex)),
+      hatStyle: sanitizeHatStyle(String(td.hatStyle || 'hood')),
+      level: Math.max(1, Math.min(50, Number(td.level || 1))),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `users/${myProfile.uid}/friends/${friendUid}`);
+  }
+
+  try {
+    const theirRef = doc(db, 'users', friendUid, 'friends', myProfile.uid);
+    await updateDoc(theirRef, {
+      status: 'accepted',
+      displayName: sanitizeDisplayName(myProfile.displayName),
+      coatColor: sanitizeCoatColor(myProfile.coatColor),
+      scarfColor: sanitizeScarfColor(myProfile.scarfColor),
+      hatStyle: sanitizeHatStyle(myProfile.hatStyle),
+      level: Math.max(1, Math.min(50, myProfile.level)),
+      updatedAt: serverTimestamp(),
+    });
+  } catch {
+    // Ignore if requester canceled simultaneously
+  }
+}
+
+export async function removeOrDeclineFriend(myUid: string, friendUid: string): Promise<void> {
+  try {
+    await deleteDoc(doc(db, 'users', myUid, 'friends', friendUid));
+  } catch {
+    // ignore
+  }
+  try {
+    await deleteDoc(doc(db, 'users', friendUid, 'friends', myUid));
+  } catch {
+    // ignore
   }
 }
 
@@ -246,12 +546,14 @@ export function subscribePublicRooms(
             hostId: String(d.hostId || ''),
             hostName: String(d.hostName || 'Host'),
             difficulty: d.difficulty === 'nightmare' ? ('nightmare' as DifficultyId) : ('normal' as DifficultyId),
+            level: Math.max(1, Math.min(50, Number(d.level || 1))),
             mazeSeed: Number(d.mazeSeed || 1),
             status: (d.status as GameRoomData['status']) || 'waiting',
             collectedOrnaments: Array.isArray(d.collectedOrnaments) ? d.collectedOrnaments.map(Number) : [],
             collectedWeapons: Array.isArray(d.collectedWeapons) ? d.collectedWeapons.map(Number) : [],
+            collectedBatteries: Array.isArray(d.collectedBatteries) ? d.collectedBatteries.map(Number) : [],
             santaStunNonce: Number(d.santaStunNonce || 0),
-            ornamentsTotal: Number(d.ornamentsTotal || 6),
+            ornamentsTotal: Number(d.ornamentsTotal || 5),
             exitUnlocked: Boolean(d.exitUnlocked),
             isPublic: Boolean(d.isPublic),
             playerCount: Number(d.playerCount || 0),
@@ -270,13 +572,15 @@ export async function createMultiplayerRoom(
   profile: SurvivorProfile,
   roomName: string,
   difficulty: DifficultyId,
+  level: number,
   isPublic = true
 ): Promise<GameRoomData> {
   const roomId = generateRoomId();
   const cleanName = roomName.trim().slice(0, 40) || `${profile.displayName}'s Maze`;
   const finalName = cleanName.length >= 2 ? cleanName : 'North Pole Room';
+  const cleanLevel = Math.max(1, Math.min(50, Math.floor(level || 1)));
   const mazeSeed = Math.floor(100000 + Math.random() * 899999);
-  const ornamentsTotal = DIFFICULTIES[difficulty].ornamentCount;
+  const ornamentsTotal = getLevelScaling(cleanLevel, difficulty).ornamentCount;
 
   const roomPath = `rooms/${roomId}`;
   const playerPath = `rooms/${roomId}/players/${profile.uid}`;
@@ -289,10 +593,12 @@ export async function createMultiplayerRoom(
       hostId: profile.uid,
       hostName: sanitizeDisplayName(profile.displayName),
       difficulty,
+      level: cleanLevel,
       mazeSeed,
       status: 'waiting',
       collectedOrnaments: [],
       collectedWeapons: [],
+      collectedBatteries: [],
       santaStunNonce: 0,
       ornamentsTotal,
       exitUnlocked: false,
@@ -311,6 +617,8 @@ export async function createMultiplayerRoom(
       roomId,
       displayName: sanitizeDisplayName(profile.displayName),
       coatColor: sanitizeCoatColor(profile.coatColor),
+      scarfColor: sanitizeScarfColor(profile.scarfColor),
+      hatStyle: sanitizeHatStyle(profile.hatStyle),
       x: 0,
       z: 0,
       yaw: 0,
@@ -343,10 +651,12 @@ export async function createMultiplayerRoom(
     hostId: profile.uid,
     hostName: sanitizeDisplayName(profile.displayName),
     difficulty,
+    level: cleanLevel,
     mazeSeed,
     status: 'waiting',
     collectedOrnaments: [],
     collectedWeapons: [],
+    collectedBatteries: [],
     santaStunNonce: 0,
     ornamentsTotal,
     exitUnlocked: false,
@@ -383,6 +693,8 @@ export async function joinMultiplayerRoom(
       roomId,
       displayName: sanitizeDisplayName(profile.displayName),
       coatColor: sanitizeCoatColor(profile.coatColor),
+      scarfColor: sanitizeScarfColor(profile.scarfColor),
+      hatStyle: sanitizeHatStyle(profile.hatStyle),
       x: 0,
       z: 0,
       yaw: 0,
@@ -405,28 +717,32 @@ export async function joinMultiplayerRoom(
       hostId: String(d.hostId || ''),
       hostName: String(d.hostName || 'Host'),
       difficulty: d.difficulty === 'nightmare' ? 'nightmare' : 'normal',
+      level: Math.max(1, Math.min(50, Number(d.level || 1))),
       mazeSeed: Number(d.mazeSeed || 1),
       status: (d.status as GameRoomData['status']) || 'waiting',
       collectedOrnaments: Array.isArray(d.collectedOrnaments) ? d.collectedOrnaments.map(Number) : [],
       collectedWeapons: Array.isArray(d.collectedWeapons) ? d.collectedWeapons.map(Number) : [],
+      collectedBatteries: Array.isArray(d.collectedBatteries) ? d.collectedBatteries.map(Number) : [],
       santaStunNonce: Number(d.santaStunNonce || 0),
-      ornamentsTotal: Number(d.ornamentsTotal || 6),
+      ornamentsTotal: Number(d.ornamentsTotal || 5),
       exitUnlocked: Boolean(d.exitUnlocked),
       isPublic: Boolean(d.isPublic),
       playerCount: Number(d.playerCount || 1) + (existingPlayer.exists() ? 0 : 1),
     };
   } catch (error) {
-    if (error instanceof Error && (error.message.includes('was not found') || error.message.includes('already ended') || error.message.includes('Invalid room'))) {
+    if (
+      error instanceof Error &&
+      (error.message.includes('was not found') ||
+        error.message.includes('already ended') ||
+        error.message.includes('Invalid room'))
+    ) {
       throw error;
     }
     handleFirestoreError(error, OperationType.WRITE, roomPath);
   }
 }
 
-export async function leaveMultiplayerRoom(
-  roomId: string,
-  uid: string
-): Promise<void> {
+export async function leaveMultiplayerRoom(roomId: string, uid: string): Promise<void> {
   const roomRef = doc(db, 'rooms', roomId);
   const playerRef = doc(db, 'rooms', roomId, 'players', uid);
   try {
@@ -460,7 +776,6 @@ export async function startMultiplayerRoom(roomId: string): Promise<void> {
 }
 
 export async function finishMultiplayerRoom(roomId: string): Promise<void> {
-  const path = `rooms/${roomId}`;
   try {
     await updateDoc(doc(db, 'rooms', roomId), {
       status: 'finished',
@@ -485,7 +800,7 @@ export async function collectRoomOrnament(
     if (d.status === 'finished') return;
     const current: number[] = Array.isArray(d.collectedOrnaments) ? d.collectedOrnaments.map(Number) : [];
     if (current.includes(ornamentId)) return;
-    const next = [...current, ornamentId].slice(0, 10);
+    const next = [...current, ornamentId].slice(0, 12);
     await updateDoc(roomRef, {
       collectedOrnaments: next,
       exitUnlocked: next.length >= ornamentsTotal,
@@ -509,6 +824,26 @@ export async function collectRoomWeapon(roomId: string, weaponId: number): Promi
     const next = [...current, weaponId].slice(-40);
     await updateDoc(roomRef, {
       collectedWeapons: next,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function collectRoomBattery(roomId: string, batteryId: number): Promise<void> {
+  const path = `rooms/${roomId}`;
+  try {
+    const roomRef = doc(db, 'rooms', roomId);
+    const snap = await getDoc(roomRef);
+    if (!snap.exists()) return;
+    const d = snap.data();
+    if (d.status === 'finished') return;
+    const current: number[] = Array.isArray(d.collectedBatteries) ? d.collectedBatteries.map(Number) : [];
+    if (current.includes(batteryId)) return;
+    const next = [...current, batteryId].slice(-30);
+    await updateDoc(roomRef, {
+      collectedBatteries: next,
       updatedAt: serverTimestamp(),
     });
   } catch (error) {
@@ -546,11 +881,12 @@ export async function syncLocalPlayerState(
     escaped: boolean;
   }
 ): Promise<void> {
-  const path = `rooms/${roomId}/players/${profile.uid}`;
   try {
     await updateDoc(doc(db, 'rooms', roomId, 'players', profile.uid), {
       displayName: sanitizeDisplayName(profile.displayName),
       coatColor: sanitizeCoatColor(profile.coatColor),
+      scarfColor: sanitizeScarfColor(profile.scarfColor),
+      hatStyle: sanitizeHatStyle(profile.hatStyle),
       x: Number(state.x.toFixed(2)),
       z: Number(state.z.toFixed(2)),
       yaw: Number(state.yaw.toFixed(3)),
@@ -602,12 +938,14 @@ export function subscribeRoom(
         hostId: String(d.hostId || ''),
         hostName: String(d.hostName || 'Host'),
         difficulty: d.difficulty === 'nightmare' ? 'nightmare' : 'normal',
+        level: Math.max(1, Math.min(50, Number(d.level || 1))),
         mazeSeed: Number(d.mazeSeed || 1),
         status: (d.status as GameRoomData['status']) || 'waiting',
         collectedOrnaments: Array.isArray(d.collectedOrnaments) ? d.collectedOrnaments.map(Number) : [],
         collectedWeapons: Array.isArray(d.collectedWeapons) ? d.collectedWeapons.map(Number) : [],
+        collectedBatteries: Array.isArray(d.collectedBatteries) ? d.collectedBatteries.map(Number) : [],
         santaStunNonce: Number(d.santaStunNonce || 0),
-        ornamentsTotal: Number(d.ornamentsTotal || 6),
+        ornamentsTotal: Number(d.ornamentsTotal || 5),
         exitUnlocked: Boolean(d.exitUnlocked),
         isPublic: Boolean(d.isPublic),
         playerCount: Number(d.playerCount || 0),
@@ -632,7 +970,9 @@ export function subscribeRoomPlayers(
           uid: String(d.uid || docSnap.id),
           roomId: String(d.roomId || roomId),
           displayName: String(d.displayName || 'Survivor'),
-          coatColor: String(d.coatColor || '#3b82f6'),
+          coatColor: sanitizeCoatColor(String(d.coatColor || '#3b82f6')),
+          scarfColor: sanitizeScarfColor(String(d.scarfColor || SCARF_COLORS[0].hex)),
+          hatStyle: sanitizeHatStyle(String(d.hatStyle || 'hood')),
           x: Number(d.x || 0),
           z: Number(d.z || 0),
           yaw: Number(d.yaw || 0),

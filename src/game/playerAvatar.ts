@@ -1,8 +1,10 @@
 import * as THREE from 'three';
-import { RoomPlayerData } from './types';
+import { HatStyle, RoomPlayerData } from './types';
 
 export interface RemoteSurvivorRig {
   uid: string;
+  displayName: string;
+  coatColorHex: string;
   root: THREE.Group;
   targetX: number;
   targetZ: number;
@@ -79,9 +81,23 @@ export function createRemoteSurvivor(
   );
   const scarfMat = track(
     new THREE.MeshStandardMaterial({
-      color: 0xe2e8f0,
+      color: new THREE.Color(initial.scarfColor || '#e2e8f0'),
       roughness: 0.92,
       metalness: 0.0,
+    })
+  );
+  const whiteFurMat = track(
+    new THREE.MeshStandardMaterial({
+      color: 0xf1f5f9,
+      roughness: 0.94,
+      metalness: 0.0,
+    })
+  );
+  const santaHatRedMat = track(
+    new THREE.MeshStandardMaterial({
+      color: 0xb91c1c,
+      roughness: 0.85,
+      metalness: 0.03,
     })
   );
   const metalMat = track(
@@ -147,18 +163,66 @@ export function createRemoteSurvivor(
   pack.position.set(0, 1.18, -0.24);
   root.add(pack);
 
-  // Head & Winter Hood
+  // Head
   const head = new THREE.Mesh(track(new THREE.SphereGeometry(0.18, 10, 10)), skinMat);
   head.position.y = 1.68;
   root.add(head);
 
+  // Customizable Hats
+  const hoodGroup = new THREE.Group();
   const hood = new THREE.Mesh(
     track(new THREE.SphereGeometry(0.21, 10, 10, 0, Math.PI * 2, 0, Math.PI * 0.68)),
     coatMat
   );
   hood.position.set(0, 1.7, -0.02);
   hood.rotation.x = -0.25;
-  root.add(hood);
+  hoodGroup.add(hood);
+  root.add(hoodGroup);
+
+  const beanieGroup = new THREE.Group();
+  const beanieDome = new THREE.Mesh(
+    track(new THREE.SphereGeometry(0.195, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.56)),
+    scarfMat
+  );
+  beanieDome.position.set(0, 1.71, 0);
+  const beanieCuff = new THREE.Mesh(track(new THREE.TorusGeometry(0.185, 0.036, 7, 14)), coatMat);
+  beanieCuff.rotation.x = Math.PI / 2;
+  beanieCuff.position.set(0, 1.73, 0);
+  const beaniePom = new THREE.Mesh(track(new THREE.SphereGeometry(0.055, 8, 8)), whiteFurMat);
+  beaniePom.position.set(0, 1.94, 0);
+  beanieGroup.add(beanieDome, beanieCuff, beaniePom);
+  root.add(beanieGroup);
+
+  const santaHatGroup = new THREE.Group();
+  const sBrim = new THREE.Mesh(track(new THREE.TorusGeometry(0.19, 0.04, 7, 14)), whiteFurMat);
+  sBrim.rotation.x = Math.PI / 2;
+  sBrim.position.set(0, 1.74, 0);
+  const sCone = new THREE.Mesh(track(new THREE.ConeGeometry(0.18, 0.38, 10)), santaHatRedMat);
+  sCone.position.set(0, 1.94, -0.04);
+  sCone.rotation.x = -0.24;
+  const sPom = new THREE.Mesh(track(new THREE.SphereGeometry(0.05, 8, 8)), whiteFurMat);
+  sPom.position.set(0, 2.11, -0.1);
+  santaHatGroup.add(sBrim, sCone, sPom);
+  root.add(santaHatGroup);
+
+  const ushankaGroup = new THREE.Group();
+  const uCrown = new THREE.Mesh(track(new THREE.CylinderGeometry(0.19, 0.2, 0.2, 10)), coatMat);
+  uCrown.position.set(0, 1.81, 0);
+  const uFlapFront = new THREE.Mesh(track(new THREE.BoxGeometry(0.32, 0.14, 0.08)), whiteFurMat);
+  uFlapFront.position.set(0, 1.82, 0.17);
+  const uEarL = new THREE.Mesh(track(new THREE.BoxGeometry(0.07, 0.24, 0.16)), whiteFurMat);
+  uEarL.position.set(-0.2, 1.71, 0);
+  const uEarR = new THREE.Mesh(track(new THREE.BoxGeometry(0.07, 0.24, 0.16)), whiteFurMat);
+  uEarR.position.set(0.2, 1.71, 0);
+  ushankaGroup.add(uCrown, uFlapFront, uEarL, uEarR);
+  root.add(ushankaGroup);
+
+  const applyHatStyle = (style: HatStyle) => {
+    hoodGroup.visible = style === 'hood';
+    beanieGroup.visible = style === 'beanie';
+    santaHatGroup.visible = style === 'santa_hat';
+    ushankaGroup.visible = style === 'ushanka';
+  };
 
   // Right arm holding flashlight
   const flashlightTorch = new THREE.Group();
@@ -188,12 +252,14 @@ export function createRemoteSurvivor(
     })
   );
   const nameSprite = new THREE.Sprite(nameMat);
-  nameSprite.position.set(0, 2.18, 0);
+  nameSprite.position.set(0, 2.25, 0);
   nameSprite.scale.set(1.4, 0.35, 1);
   root.add(nameSprite);
 
   const rig: RemoteSurvivorRig = {
     uid: initial.uid,
+    displayName: initial.displayName,
+    coatColorHex: initial.coatColor || '#3b82f6',
     root,
     targetX: initial.x,
     targetZ: initial.z,
@@ -201,12 +267,16 @@ export function createRemoteSurvivor(
     alive: initial.alive,
     escaped: initial.escaped,
     syncFromData(data: RoomPlayerData) {
+      this.displayName = data.displayName;
+      this.coatColorHex = data.coatColor || '#3b82f6';
       this.targetX = data.x;
       this.targetZ = data.z;
       this.targetYaw = data.yaw;
       this.alive = data.alive;
       this.escaped = data.escaped;
       coatMat.color.set(data.coatColor || '#3b82f6');
+      scarfMat.color.set(data.scarfColor || '#e2e8f0');
+      applyHatStyle(data.hatStyle || 'hood');
       torchLight.intensity = data.flashlightOn && data.alive ? 1.8 : 0;
       torchLens.visible = data.flashlightOn && data.alive;
       root.visible = data.alive && !data.escaped;

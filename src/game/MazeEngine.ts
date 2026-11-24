@@ -6,16 +6,22 @@ import {
   cellToWorld,
   createRng,
   findNextStepBFS,
+  findPathBFS,
   generateMaze,
   hasLineOfSight,
   worldToCell,
 } from './maze';
+import { TinyElfRig, createTinyElf } from './elfModel';
 import { RemoteSurvivorRig, createRemoteSurvivor } from './playerAvatar';
 import {
+  BatteryProp,
+  ElfTrapProp,
   ExitGateProp,
   OrnamentProp,
   WeaponProp,
   buildWeaponCompositeMesh,
+  createBatteryProp,
+  createElfTrapProp,
   createExitGate,
   createOrnamentProp,
   createWeaponProp,
@@ -28,11 +34,14 @@ import {
   GamePhase,
   GridCoord,
   HudSnapshot,
+  MapMarkerPlayer,
   MazeData,
+  MazeMapState,
   RoomPlayerData,
   SantaLiveData,
   WEAPON_SPECS,
   WeaponType,
+  getLevelScaling,
 } from './types';
 
 // Reusable math objects (zero per-frame GC)
@@ -62,6 +71,7 @@ export interface MultiplayerEngineCallbacks {
   onHostSantaSync?: (state: SantaLiveData) => void;
   onCollectOrnament?: (ornamentId: number) => void;
   onCollectWeapon?: (weaponId: number) => void;
+  onCollectBattery?: (batteryId: number) => void;
   onTriggerSantaStun?: () => void;
   onLocalEliminated?: () => void;
   onLocalEscaped?: () => void;
@@ -81,6 +91,7 @@ export class MazeEngine {
   private textures!: ProceduralTextures;
   private audio = new HorrorAudio();
   private disposables: { dispose: () => void }[] = [];
+  private levelDisposables: { dispose: () => void }[] = [];
 
   private mazeGroup!: THREE.Group;
   private mazeData!: MazeData;
@@ -88,10 +99,18 @@ export class MazeEngine {
   private santa!: EvilSantaRig;
   private ornaments: OrnamentProp[] = [];
   private weapons: WeaponProp[] = [];
+  private batteries: BatteryProp[] = [];
+  private elfTraps: ElfTrapProp[] = [];
+  private tinyElves: TinyElfRig[] = [];
+  private elfHelper: TinyElfRig | null = null;
   private exitGate!: ExitGateProp;
   private snowPoints!: THREE.Points;
   private bulbInstanced: THREE.InstancedMesh | null = null;
   private bulbBaseColors: THREE.Color[] = [];
+
+  // Chime 3D corridor breadcrumb trail
+  private chimeTrailGroup!: THREE.Group;
+  private chimeMarkers: THREE.Mesh[] = [];
 
   // First-person held weapon viewmodel & shot tracer
   private heldWeaponMount!: THREE.Group;
@@ -101,19 +120,30 @@ export class MazeEngine {
   private shotTracerLine!: THREE.Line;
   private shotTracerTimer = 0;
 
+  private hemiLight!: THREE.HemisphereLight;
+  private moonLight!: THREE.DirectionalLight;
   private flashlight!: THREE.SpotLight;
   private flashlightTarget!: THREE.Object3D;
   private playerAmbientGlow!: THREE.PointLight;
   private fog!: THREE.FogExp2;
+  private visionFactor = 1;
 
   // Game State
   private phase: GamePhase = 'menu';
   private difficulty: DifficultyId = 'normal';
+  private level = 1;
   private ornamentsCollected = 0;
   private exitUnlocked = false;
   private elapsedSeconds = 0;
   private nextWeaponWaveIndex = 0;
   private nextWeaponSpawnAt = WEAPON_SPAWN_INTERVAL;
+  private playerTrapStunRemaining = 0;
+
+  // Mobile Touch Input State
+  private touchMoveX = 0;
+  private touchMoveZ = 0;
+  private touchLookYawDelta = 0;
+  private touchLookPitchDelta = 0;
 
   // Multiplayer State
   private isMultiplayer = false;
@@ -125,10 +155,12 @@ export class MazeEngine {
   private chatOpen = false;
   private mpCallbacks: MultiplayerEngineCallbacks = {};
   private remotePlayers = new Map<string, RemoteSurvivorRig>();
+  private latestRoomPlayers: RoomPlayerData[] = [];
   private remoteSantaTarget: SantaLiveData | null = null;
   private lastPlayerSyncMs = 0;
   private lastSantaSyncMs = 0;
   private syncedCollectedWeapons = new Set<number>();
+  private syncedCollectedBatteries = new Set<number>();
   private lastSeenStunNonce = 0;
 
   // Player kinematics & Dodge
@@ -164,6 +196,7 @@ export class MazeEngine {
   private chimeDisplayTimer = 0;
   private chimeAngleDeg: number | null = null;
   private chimeTargetLabel = '';
+  private chimeTargetDistance: number | null = null;
 
   // Status banner
   private statusBanner: string | null = null;
@@ -271,14 +304,14 @@ export class MazeEngine {
     this.shotTracerLine.visible = false;
     this.scene.add(this.shotTracerLine);
 
-    const hemi = new THREE.HemisphereLight(0x466396, 0x090c14, 0.58);
-    this.scene.add(hemi);
+    this.hemiLight = new THREE.HemisphereLight(0x466396, 0x090c14, 0.58);
+    this.scene.add(this.hemiLight);
 
-    const moonLight = new THREE.DirectionalLight(0x7898d8, 0.42);
-    moonLight.position.set(18, 32, -14);
-    this.scene.add(moonLight);
+    this.moonLight = new THREE.DirectionalLight(0x7898d8, 0.42);
+    this.moonLight.position.set(18, 32, -14);
+    this.scene.add(this.moonLight);
 
-    this.playerAmbientGlow = new THREE.PointLight(0x3a4d70, 0.7, 5.5, 1.8);
+    this.playerAmbientGlow = new THREE.PointLight(0x3a4d70, 0.82, 6.2, 1.7);
     this.scene.add(this.playerAmbientGlow);
 
     this.flashlight = new THREE.SpotLight(0xfff1d4, 7.2, 26, Math.PI / 5.4, 0.62, 1.55);
@@ -293,6 +326,24 @@ export class MazeEngine {
     this.scene.add(this.flashlight);
     this.scene.add(this.flashlightTarget);
     this.flashlight.target = this.flashlightTarget;
+
+    // 3D Golden Chime Path Breadcrumb Markers (up to 10 corridor steps)
+    this.chimeTrailGroup = new THREE.Group();
+    this.chimeTrailGroup.visible = false;
+    const markerGeo = new THREE.OctahedronGeometry(0.18, 0);
+    const markerMat = new THREE.MeshBasicMaterial({
+      color: 0xfbbf24,
+      transparent: true,
+      opacity: 0.9,
+    });
+    this.disposables.push(markerGeo, markerMat);
+    for (let i = 0; i < 10; i++) {
+      const m = new THREE.Mesh(markerGeo, markerMat);
+      m.visible = false;
+      this.chimeMarkers.push(m);
+      this.chimeTrailGroup.add(m);
+    }
+    this.scene.add(this.chimeTrailGroup);
 
     this.buildSnowParticles();
 
@@ -366,8 +417,20 @@ export class MazeEngine {
       rig.dispose();
     }
     this.remotePlayers.clear();
+    for (const elf of this.tinyElves) {
+      elf.dispose();
+    }
+    this.tinyElves = [];
+    if (this.elfHelper) {
+      this.elfHelper.dispose();
+      this.elfHelper = null;
+    }
+    this.levelDisposables.forEach((d) => d.dispose());
+    this.levelDisposables = [];
     this.ornaments = [];
     this.weapons = [];
+    this.batteries = [];
+    this.elfTraps = [];
     this.bulbInstanced = null;
     this.bulbBaseColors = [];
   }
@@ -420,7 +483,7 @@ export class MazeEngine {
         wPos.z,
         this.textures.contactShadow,
         this.textures.candyCaneColor,
-        this.disposables
+        this.levelDisposables
       );
       this.weapons.push(prop);
       this.mazeGroup.add(prop.group);
@@ -432,14 +495,22 @@ export class MazeEngine {
     }
   }
 
-  private buildNewLevel(seed?: number): void {
+  private buildNewLevel(seed?: number, levelOverride?: number): void {
     this.clearMazeGroup();
     this.setEquippedWeapon(null);
+    if (levelOverride !== undefined) {
+      this.level = Math.max(1, Math.min(50, Math.floor(levelOverride)));
+    }
 
-    const diff = DIFFICULTIES[this.difficulty];
-    this.fog.density = diff.fogDensity;
+    const scaling = getLevelScaling(this.level, this.difficulty);
+    this.fog.density = scaling.fogDensity;
     this.activeMazeSeed = seed ?? Math.floor(1 + Math.random() * 999999);
-    this.mazeData = generateMaze(diff.ornamentCount, this.activeMazeSeed);
+    this.mazeData = generateMaze(
+      scaling.ornamentCount,
+      this.activeMazeSeed,
+      scaling.mazeSize,
+      scaling.batteryCount
+    );
 
     const { size, cellSize, wallHeight, grid } = this.mazeData;
     const totalSpan = size * cellSize;
@@ -451,7 +522,7 @@ export class MazeEngine {
       roughness: 0.85,
       metalness: 0.05,
     });
-    this.disposables.push(groundGeo, groundMat);
+    this.levelDisposables.push(groundGeo, groundMat);
     const ground = new THREE.Mesh(groundGeo, groundMat);
     ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
@@ -473,7 +544,7 @@ export class MazeEngine {
       roughness: 0.9,
       metalness: 0.02,
     });
-    this.disposables.push(wallGeo, wallMat);
+    this.levelDisposables.push(wallGeo, wallMat);
 
     const wallInstanced = new THREE.InstancedMesh(wallGeo, wallMat, wallCoords.length);
     wallInstanced.castShadow = !this.isSoftwareGl;
@@ -519,7 +590,7 @@ export class MazeEngine {
     if (bulbPositions.length > 0) {
       const bulbGeo = new THREE.SphereGeometry(0.075, 8, 8);
       const bulbMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-      this.disposables.push(bulbGeo, bulbMat);
+      this.levelDisposables.push(bulbGeo, bulbMat);
       this.bulbInstanced = new THREE.InstancedMesh(bulbGeo, bulbMat, bulbPositions.length);
       bulbPositions.forEach((bp, i) => {
         _dummy.position.copy(bp);
@@ -545,14 +616,64 @@ export class MazeEngine {
         x,
         z,
         this.textures.contactShadow,
-        this.disposables
+        this.levelDisposables
       );
       this.ornaments.push(prop);
       this.mazeGroup.add(prop.group);
     });
 
+    this.mazeData.batteries.forEach((coord, idx) => {
+      const { x, z } = cellToWorld(coord.r, coord.c, size, cellSize);
+      const prop = createBatteryProp(
+        idx,
+        coord.r,
+        coord.c,
+        x,
+        z,
+        this.textures.contactShadow,
+        this.levelDisposables
+      );
+      this.batteries.push(prop);
+      this.mazeGroup.add(prop.group);
+    });
+
+    this.mazeData.traps.forEach((coord, idx) => {
+      const { x, z } = cellToWorld(coord.r, coord.c, size, cellSize);
+      const prop = createElfTrapProp(
+        idx,
+        coord.r,
+        coord.c,
+        x,
+        z,
+        this.textures.contactShadow,
+        this.levelDisposables
+      );
+      this.elfTraps.push(prop);
+      this.mazeGroup.add(prop.group);
+    });
+
+    // Spawn Tiny Elves across the maze
+    const elfCount = Math.min(8, 3 + Math.floor(this.level * 0.4));
+    for (let i = 0; i < elfCount; i++) {
+      const elfRig = createTinyElf(this.textures.contactShadow, false);
+      const randCoord = this.mazeData.ornaments[i % this.mazeData.ornaments.length] || this.mazeData.playerSpawn;
+      const ew = cellToWorld(randCoord.r, randCoord.c, size, cellSize);
+      elfRig.root.position.set(ew.x, 0, ew.z);
+      this.tinyElves.push(elfRig);
+      this.mazeGroup.add(elfRig.root);
+    }
+
+    // Nightmare mode helper elf accompanying Evil Santa
+    if (this.difficulty === 'nightmare') {
+      const helper = createTinyElf(this.textures.contactShadow, true);
+      const santaW = cellToWorld(this.mazeData.santaSpawn.r, this.mazeData.santaSpawn.c, size, cellSize);
+      helper.root.position.set(santaW.x + 1.5, 0, santaW.z + 1.5);
+      this.elfHelper = helper;
+      this.mazeGroup.add(helper.root);
+    }
+
     const exitW = cellToWorld(this.mazeData.exitCell.r, this.mazeData.exitCell.c, size, cellSize);
-    this.exitGate = createExitGate(exitW.x, exitW.z, this.textures.candyCaneColor, this.disposables);
+    this.exitGate = createExitGate(exitW.x, exitW.z, this.textures.candyCaneColor, this.levelDisposables);
     this.exitGate.group.rotation.y = Math.PI / 2;
     this.mazeGroup.add(this.exitGate.group);
 
@@ -578,6 +699,11 @@ export class MazeEngine {
     this.stamina = 100;
     this.battery = 100;
     this.flashlightOn = true;
+    this.visionFactor = 1;
+    this.playerTrapStunRemaining = 0;
+    if (this.hemiLight) this.hemiLight.intensity = 0.58;
+    if (this.moonLight) this.moonLight.intensity = 0.42;
+    if (this.playerAmbientGlow) this.playerAmbientGlow.intensity = 0.82;
     this.dodgeCooldown = 0;
     this.dodgeActiveTimer = 0;
     this.santaAlerted = false;
@@ -593,13 +719,20 @@ export class MazeEngine {
     this.chimeCooldown = 0;
     this.chimeDisplayTimer = 0;
     this.chimeAngleDeg = null;
+    this.chimeTargetDistance = null;
+    if (this.chimeTrailGroup) this.chimeTrailGroup.visible = false;
     this.syncedCollectedWeapons.clear();
+    this.syncedCollectedBatteries.clear();
     this.lastSeenStunNonce = 0;
     this.nextWeaponWaveIndex = 1;
     this.nextWeaponSpawnAt = WEAPON_SPAWN_INTERVAL;
 
     // Spawn initial wave of 2 weapons on the maze floor right away, then every 60s
     this.spawnWeaponWave(0, false);
+
+    if (this.isMultiplayer && this.latestRoomPlayers.length > 0) {
+      this.applyRemotePlayers(this.latestRoomPlayers);
+    }
   }
 
   private unlockExitGateVisuals(): void {
@@ -614,12 +747,14 @@ export class MazeEngine {
     this.exitGate.gateLight.color.setHex(0x22ff99);
   }
 
-  public startNewGame(difficulty: DifficultyId): void {
+  public startNewGame(difficulty: DifficultyId, level = 1): void {
     this.difficulty = difficulty;
+    this.level = Math.max(1, Math.min(50, Math.floor(level || 1)));
     this.isMultiplayer = false;
     this.roomId = null;
     this.isHost = false;
     this.localUid = null;
+    this.latestRoomPlayers = [];
     this.alive = true;
     this.spectating = false;
     this.chatOpen = false;
@@ -627,10 +762,10 @@ export class MazeEngine {
     this.remoteSantaTarget = null;
 
     this.audio.init();
-    this.buildNewLevel();
+    this.buildNewLevel(undefined, this.level);
     this.phase = 'playing';
     this.showBanner(
-      `Collect ${this.mazeData.ornaments.length} ornaments. Find weapons (drop every 60s) to stun Santa 30s!`
+      `Level ${this.level}: Collect ${this.mazeData.ornaments.length} ornaments. Grab weapons & batteries!`
     );
     this.requestPointerLockSafe();
     this.pushHud();
@@ -638,12 +773,14 @@ export class MazeEngine {
 
   public enterWaitingRoom(
     difficulty: DifficultyId,
+    level: number,
     mazeSeed: number,
     roomId: string,
     isHost: boolean,
     localUid: string
   ): void {
     this.difficulty = difficulty;
+    this.level = Math.max(1, Math.min(50, Math.floor(level || 1)));
     this.isMultiplayer = true;
     this.roomId = roomId;
     this.isHost = isHost;
@@ -654,12 +791,13 @@ export class MazeEngine {
     this.remoteSantaTarget = null;
     this.phase = 'waiting';
     this.exitPointerLockSafe();
-    this.buildNewLevel(mazeSeed);
+    this.buildNewLevel(mazeSeed, this.level);
     this.pushHud();
   }
 
   public startMultiplayerSession(cfg: {
     difficulty: DifficultyId;
+    level: number;
     mazeSeed: number;
     roomId: string;
     isHost: boolean;
@@ -667,6 +805,7 @@ export class MazeEngine {
     callbacks: MultiplayerEngineCallbacks;
   }): void {
     this.difficulty = cfg.difficulty;
+    this.level = Math.max(1, Math.min(50, Math.floor(cfg.level || 1)));
     this.isMultiplayer = true;
     this.roomId = cfg.roomId;
     this.isHost = cfg.isHost;
@@ -678,10 +817,10 @@ export class MazeEngine {
     this.remoteSantaTarget = null;
 
     this.audio.init();
-    this.buildNewLevel(cfg.mazeSeed);
+    this.buildNewLevel(cfg.mazeSeed, this.level);
     this.phase = 'playing';
     this.showBanner(
-      `Collect ${this.mazeData.ornaments.length} ornaments! Weapons drop every 60s to stun Santa 30s.`
+      `Level ${this.level}: Collect ${this.mazeData.ornaments.length} ornaments! Weapons drop every 60s.`
     );
     this.requestPointerLockSafe();
 
@@ -707,6 +846,7 @@ export class MazeEngine {
   }
 
   public applyRemotePlayers(players: RoomPlayerData[]): void {
+    this.latestRoomPlayers = players;
     if (!this.isMultiplayer || !this.mazeGroup) return;
 
     const seen = new Set<string>();
@@ -761,6 +901,7 @@ export class MazeEngine {
     collectedOrnaments: number[],
     exitUnlocked: boolean,
     collectedWeapons: number[],
+    collectedBatteries: number[],
     santaStunNonce: number
   ): void {
     if (!this.isMultiplayer) return;
@@ -789,7 +930,7 @@ export class MazeEngine {
     if (exitUnlocked && !this.exitUnlocked) {
       this.unlockExitGateVisuals();
       this.audio.playExitUnlocked();
-      this.showBanner('All ornaments recovered! Follow the EXIT compass to escape!', 6.0);
+      this.showBanner('All ornaments recovered! Follow the EXIT compass or Map to escape!', 6.0);
     }
 
     for (const wid of collectedWeapons) {
@@ -798,6 +939,15 @@ export class MazeEngine {
       if (wp && !wp.collected) {
         wp.collected = true;
         wp.group.visible = false;
+      }
+    }
+
+    for (const bid of collectedBatteries) {
+      this.syncedCollectedBatteries.add(bid);
+      const bat = this.batteries.find((b) => b.id === bid);
+      if (bat && !bat.collected) {
+        bat.collected = true;
+        bat.group.visible = false;
       }
     }
 
@@ -853,22 +1003,45 @@ export class MazeEngine {
     this.roomId = null;
     this.isHost = false;
     this.localUid = null;
+    this.latestRoomPlayers = [];
     this.alive = true;
     this.spectating = false;
     this.chatOpen = false;
     this.mpCallbacks = {};
     this.remoteSantaTarget = null;
     this.exitPointerLockSafe();
-    this.buildNewLevel();
+    this.buildNewLevel(undefined, this.level);
     this.pushHud();
   }
 
-  public setDifficulty(difficulty: DifficultyId): void {
+  public setDifficulty(difficulty: DifficultyId, level?: number): void {
     this.difficulty = difficulty;
+    if (level !== undefined) {
+      this.level = Math.max(1, Math.min(50, Math.floor(level)));
+    }
     if (this.fog) {
-      this.fog.density = DIFFICULTIES[difficulty].fogDensity;
+      this.fog.density = getLevelScaling(this.level, difficulty).fogDensity;
     }
     this.pushHud();
+  }
+
+  public setSelectedLevel(level: number): void {
+    this.level = Math.max(1, Math.min(50, Math.floor(level || 1)));
+    if (this.fog) {
+      this.fog.density = getLevelScaling(this.level, this.difficulty).fogDensity;
+    }
+    this.pushHud();
+  }
+
+  public setTouchMoveVector(x: number, z: number): void {
+    this.touchMoveX = x;
+    this.touchMoveZ = z;
+  }
+
+  public applyTouchLookDelta(dx: number, dy: number): void {
+    const sens = 0.0032;
+    this.yaw -= dx * sens;
+    this.pitch = THREE.MathUtils.clamp(this.pitch - dy * sens, -1.25, 1.25);
   }
 
   public toggleMute(): void {
@@ -878,8 +1051,8 @@ export class MazeEngine {
 
   public toggleFlashlight(): void {
     if (this.phase !== 'playing' || !this.alive) return;
-    if (!this.flashlightOn && this.battery <= 4) {
-      this.showBanner('Flashlight battery depleted. Wait for recharge.');
+    if (!this.flashlightOn && this.battery < 8) {
+      this.showBanner(`Battery too low (${this.battery.toFixed(0)}%) — wait for 8% recharge or grab a battery.`, 2.4);
       return;
     }
     this.flashlightOn = !this.flashlightOn;
@@ -889,8 +1062,8 @@ export class MazeEngine {
 
   public triggerChimeSense(): void {
     if (this.phase !== 'playing' || !this.alive || this.chimeCooldown > 0) return;
-    this.chimeCooldown = 5.5;
-    this.chimeDisplayTimer = 4.2;
+    this.chimeCooldown = 5.0;
+    this.chimeDisplayTimer = 5.0;
     this.audio.playChimePulse();
     this.updateChimeBearing();
     this.pushHud();
@@ -1296,7 +1469,7 @@ export class MazeEngine {
       return Math.hypot(this.playerPos.x - this.santaPos.x, this.playerPos.z - this.santaPos.z);
     }
 
-    const diff = DIFFICULTIES[this.difficulty];
+    const scaling = getLevelScaling(this.level, this.difficulty);
 
     const candidates: { x: number; z: number; flashlightOn: boolean; sprinting: boolean }[] = [];
     if (this.alive && !this.spectating) {
@@ -1332,7 +1505,7 @@ export class MazeEngine {
 
     for (const c of candidates) {
       const d = Math.hypot(c.x - this.santaPos.x, c.z - this.santaPos.z);
-      const effSight = c.flashlightOn ? diff.santaSightRange : diff.santaSightRange * 0.6;
+      const effSight = c.flashlightOn ? scaling.santaSightRange : scaling.santaSightRange * 0.58;
       const sees =
         d <= effSight &&
         hasLineOfSight(this.mazeData.grid, this.santaPos.x, this.santaPos.z, c.x, c.z, CELL_SIZE);
@@ -1377,7 +1550,7 @@ export class MazeEngine {
     }
 
     const rageBoost = 1 + Math.min(4, this.ornamentsCollected) * 0.025;
-    const targetSpeed = (this.santaAlerted ? diff.santaChaseSpeed : diff.santaBaseSpeed) * rageBoost;
+    const targetSpeed = (this.santaAlerted ? scaling.santaChaseSpeed : scaling.santaBaseSpeed) * rageBoost;
     this.santaCurrentSpeed = THREE.MathUtils.damp(this.santaCurrentSpeed, targetSpeed, 5, dt);
 
     let moveTargetX = nearestTarget.x;
@@ -1473,7 +1646,7 @@ export class MazeEngine {
       const ew = cellToWorld(goalCell.r, goalCell.c, this.mazeData.size, CELL_SIZE);
       fallbackX = ew.x;
       fallbackZ = ew.z;
-      this.chimeTargetLabel = 'Exit Gate Path';
+      this.chimeTargetLabel = 'Exit Gate';
     } else {
       let bestDist = Infinity;
       for (const o of this.ornaments) {
@@ -1484,22 +1657,39 @@ export class MazeEngine {
           goalCell = { r: o.r, c: o.c };
           fallbackX = o.group.position.x;
           fallbackZ = o.group.position.z;
-          this.chimeTargetLabel = 'Ornament Path';
+          this.chimeTargetLabel = 'Nearest Star';
         }
       }
     }
 
     if (!goalCell) {
       this.chimeAngleDeg = null;
+      this.chimeTargetDistance = null;
+      this.chimeTrailGroup.visible = false;
       return;
     }
 
-    const nextStep = findNextStepBFS(this.mazeData.grid, playerCell, goalCell);
-    if (nextStep && (nextStep.r !== playerCell.r || nextStep.c !== playerCell.c)) {
-      const nw = cellToWorld(nextStep.r, nextStep.c, this.mazeData.size, CELL_SIZE);
+    this.chimeTargetDistance = Math.hypot(fallbackX - this.playerPos.x, fallbackZ - this.playerPos.z);
+
+    const path = findPathBFS(this.mazeData.grid, playerCell, goalCell, 10);
+    if (path.length > 0) {
+      const nw = cellToWorld(path[0].r, path[0].c, this.mazeData.size, CELL_SIZE);
       this.chimeAngleDeg = this.getRelativeAngleDeg(nw.x, nw.z);
+
+      this.chimeTrailGroup.visible = this.chimeDisplayTimer > 0;
+      for (let i = 0; i < this.chimeMarkers.length; i++) {
+        const marker = this.chimeMarkers[i];
+        if (i < path.length) {
+          const pw = cellToWorld(path[i].r, path[i].c, this.mazeData.size, CELL_SIZE);
+          marker.position.set(pw.x, 0.34, pw.z);
+          marker.visible = true;
+        } else {
+          marker.visible = false;
+        }
+      }
     } else {
       this.chimeAngleDeg = this.getRelativeAngleDeg(fallbackX, fallbackZ);
+      this.chimeTrailGroup.visible = false;
     }
   }
 
@@ -1538,6 +1728,29 @@ export class MazeEngine {
       wp.weaponMeshGroup.rotation.y = nowSec * 1.6 + wp.id;
       wp.weaponMeshGroup.position.y = 1.05 + Math.sin(nowSec * 2.8 + wp.id) * 0.08;
       wp.light.intensity = 2.1 + Math.sin(nowSec * 4.0 + wp.id) * 0.4;
+    }
+
+    for (const bat of this.batteries) {
+      if (bat.collected) continue;
+      bat.cellGroup.rotation.y = nowSec * 1.9 + bat.id;
+      bat.cellGroup.position.y = 0.78 + Math.sin(nowSec * 3.0 + bat.id) * 0.08;
+      bat.light.intensity = 1.9 + Math.sin(nowSec * 4.2 + bat.id) * 0.45;
+    }
+
+    for (const elf of this.tinyElves) {
+      elf.update(0.016, nowSec, this.playerPos.x, this.playerPos.z);
+    }
+    if (this.elfHelper) {
+      this.elfHelper.update(0.016, nowSec, this.santaPos.x, this.santaPos.z);
+    }
+
+    if (this.chimeTrailGroup && this.chimeTrailGroup.visible) {
+      for (let i = 0; i < this.chimeMarkers.length; i++) {
+        const m = this.chimeMarkers[i];
+        if (!m.visible) continue;
+        m.rotation.y = nowSec * 3.2 + i * 0.5;
+        m.position.y = 0.34 + Math.sin(nowSec * 5.0 - i * 0.65) * 0.1;
+      }
     }
 
     if (this.bulbInstanced && this.bulbBaseColors.length > 0) {
@@ -1659,8 +1872,13 @@ export class MazeEngine {
 
     if (this.chimeDisplayTimer > 0) {
       this.chimeDisplayTimer = Math.max(0, this.chimeDisplayTimer - dt);
-      if (this.chimeDisplayTimer > 0) this.updateChimeBearing();
-      else this.chimeAngleDeg = null;
+      if (this.chimeDisplayTimer > 0) {
+        this.updateChimeBearing();
+      } else {
+        this.chimeAngleDeg = null;
+        this.chimeTargetDistance = null;
+        this.chimeTrailGroup.visible = false;
+      }
     }
 
     const controlsActive = this.phase === 'playing' && !this.chatOpen;
@@ -1678,11 +1896,23 @@ export class MazeEngine {
       if (this.keys['KeyS'] || this.keys['ArrowDown']) forwardInput -= 1;
       if (this.keys['KeyD']) strafeInput += 1;
       if (this.keys['KeyA']) strafeInput -= 1;
+
+      // Add touch joystick vector inputs
+      if (Math.abs(this.touchMoveZ) > 0.05 || Math.abs(this.touchMoveX) > 0.05) {
+        forwardInput -= this.touchMoveZ; // forward is negative Z in screen space
+        strafeInput += this.touchMoveX;
+      }
+    }
+
+    if (this.playerTrapStunRemaining > 0) {
+      this.playerTrapStunRemaining = Math.max(0, this.playerTrapStunRemaining - dt);
+      forwardInput = 0;
+      strafeInput = 0;
     }
 
     const wantsMove = forwardInput !== 0 || strafeInput !== 0;
     const wantsSprint =
-      controlsActive && (this.keys['ShiftLeft'] || this.keys['ShiftRight']) && wantsMove && this.stamina > 2;
+      controlsActive && (this.keys['ShiftLeft'] || this.keys['ShiftRight'] || Math.abs(this.touchMoveZ) > 0.85) && wantsMove && this.stamina > 2;
     const sprinting = wantsSprint && !this.spectating;
 
     if (sprinting) {
@@ -1783,15 +2013,22 @@ export class MazeEngine {
     }
 
     if (this.flashlightOn && this.alive) {
-      this.battery = Math.max(0, this.battery - 1.35 * dt);
+      this.battery = Math.max(0, this.battery - 1.45 * dt);
       if (this.battery <= 0) {
         this.flashlightOn = false;
         this.audio.playFlashlightClick();
-        this.showBanner('Flashlight battery drained!');
+        this.showBanner('Flashlight dead! Vision darkened — recharging every ms, or grab a green Battery.', 4.5);
       }
     } else {
-      this.battery = Math.min(100, this.battery + 4.4 * dt);
+      // Continuous millisecond recharge whenever flashlight is off / depleted
+      this.battery = Math.min(100, this.battery + 9.0 * dt);
     }
+
+    const targetVision = (this.flashlightOn && this.battery > 0) || this.spectating ? 1.0 : 0.14;
+    this.visionFactor = THREE.MathUtils.damp(this.visionFactor, targetVision, 5.5, dt);
+    if (this.hemiLight) this.hemiLight.intensity = 0.14 + 0.44 * this.visionFactor;
+    if (this.moonLight) this.moonLight.intensity = 0.1 + 0.32 * this.visionFactor;
+    this.playerAmbientGlow.intensity = 0.12 + 0.7 * this.visionFactor;
 
     this.updateFlashlightTransform(nowSec, this.spectating || this.santaStunRemaining > 0 ? 999 : santaDist);
 
@@ -1805,6 +2042,41 @@ export class MazeEngine {
     );
 
     if (this.alive && !this.spectating) {
+      // Elf Trap collision check (5s stun)
+      if (this.playerTrapStunRemaining <= 0) {
+        for (const trap of this.elfTraps) {
+          if (trap.triggered) continue;
+          const d = Math.hypot(trap.group.position.x - this.playerPos.x, trap.group.position.z - this.playerPos.z);
+          if (d < 1.15) {
+            trap.triggered = true;
+            trap.teethGroup.rotation.x = 0.85;
+            this.playerTrapStunRemaining = 5.0;
+            this.audio.playJumpscare();
+            this.showBanner('Mischievous elf trap triggered! Stunned for 5 seconds!', 4.5);
+          }
+        }
+      }
+
+      // Battery pickup check
+      for (const bat of this.batteries) {
+        if (bat.collected) continue;
+        const d = Math.hypot(bat.group.position.x - this.playerPos.x, bat.group.position.z - this.playerPos.z);
+        if (d < 1.35) {
+          bat.collected = true;
+          bat.group.visible = false;
+          this.syncedCollectedBatteries.add(bat.id);
+          this.battery = Math.min(100, this.battery + 45);
+          if (!this.flashlightOn) {
+            this.flashlightOn = true;
+          }
+          this.audio.playBatteryPickup();
+          this.showBanner('Battery cell collected (+45% flashlight charge)!', 2.8);
+          if (this.isMultiplayer) {
+            this.mpCallbacks.onCollectBattery?.(bat.id);
+          }
+        }
+      }
+
       // Weapon pickup check
       for (const wp of this.weapons) {
         if (wp.collected) continue;
@@ -1909,7 +2181,8 @@ export class MazeEngine {
       });
     }
 
-    if (performance.now() - this.lastHudPushMs > 65) {
+    const hudIntervalMs = !this.flashlightOn && this.battery < 99.9 ? 32 : 55;
+    if (performance.now() - this.lastHudPushMs > hudIntervalMs) {
       this.pushHud(santaDist);
     }
   }
@@ -1997,15 +2270,86 @@ export class MazeEngine {
       }
     }
 
+    let nearestBatteryDistance: number | null = null;
+    let bestBatDist = Infinity;
+    for (const bat of this.batteries) {
+      if (bat.collected) continue;
+      const d = Math.hypot(bat.group.position.x - this.playerPos.x, bat.group.position.z - this.playerPos.z);
+      if (d < bestBatDist) {
+        bestBatDist = d;
+        nearestBatteryDistance = d;
+      }
+    }
+
+    let mapState: MazeMapState | null = null;
+    if (this.phase === 'playing' && this.mazeData) {
+      const { size, cellSize, grid } = this.mazeData;
+      const half = ((size - 1) * cellSize) / 2;
+      const toNorm = (wx: number, wz: number) => ({
+        normX: Math.max(0, Math.min(1, ((wx + half) / cellSize + 0.5) / size)),
+        normZ: Math.max(0, Math.min(1, ((wz + half) / cellSize + 0.5) / size)),
+      });
+
+      const pNorm = toNorm(this.playerPos.x, this.playerPos.z);
+      const sNorm = toNorm(this.santaPos.x, this.santaPos.z);
+      const eNorm = this.exitGate
+        ? toNorm(this.exitGate.group.position.x, this.exitGate.group.position.z)
+        : { normX: 0.96, normZ: 0.96 };
+
+      const otherPlayers: MapMarkerPlayer[] = [];
+      for (const [uid, rig] of this.remotePlayers.entries()) {
+        const rn = toNorm(rig.root.position.x, rig.root.position.z);
+        otherPlayers.push({
+          uid,
+          displayName: rig.displayName,
+          coatColor: rig.coatColorHex,
+          normX: rn.normX,
+          normZ: rn.normZ,
+          alive: rig.alive,
+          escaped: rig.escaped,
+        });
+      }
+
+      mapState = {
+        mazeSeed: this.activeMazeSeed,
+        size,
+        grid,
+        playerNormX: pNorm.normX,
+        playerNormZ: pNorm.normZ,
+        playerYaw: this.yaw,
+        santaNormX: sNorm.normX,
+        santaNormZ: sNorm.normZ,
+        santaAlerted: this.santaAlerted,
+        santaStunRemaining: this.santaStunRemaining,
+        exitNormX: eNorm.normX,
+        exitNormZ: eNorm.normZ,
+        exitUnlocked: this.exitUnlocked,
+        ornaments: this.ornaments
+          .filter((o) => !o.collected)
+          .map((o) => toNorm(o.group.position.x, o.group.position.z)),
+        batteries: this.batteries
+          .filter((b) => !b.collected)
+          .map((b) => toNorm(b.group.position.x, b.group.position.z)),
+        weapons: this.weapons
+          .filter((w) => !w.collected)
+          .map((w) => toNorm(w.group.position.x, w.group.position.z)),
+        otherPlayers,
+      };
+    }
+
     this.onHudUpdate({
       phase: this.phase,
       difficulty: this.difficulty,
+      level: this.level,
       ornamentsCollected: this.ornamentsCollected,
-      ornamentsTotal: this.mazeData ? this.mazeData.ornaments.length : DIFFICULTIES[this.difficulty].ornamentCount,
+      ornamentsTotal: this.mazeData
+        ? this.mazeData.ornaments.length
+        : getLevelScaling(this.level, this.difficulty).ornamentCount,
       exitUnlocked: this.exitUnlocked,
       stamina: this.stamina,
       battery: this.battery,
       flashlightOn: this.flashlightOn,
+      darknessOverlay: Number(((1 - this.visionFactor) * 0.72).toFixed(3)),
       elapsedSeconds: this.elapsedSeconds,
       santaDistance: santaDist,
       santaAngleDeg,
@@ -2018,6 +2362,7 @@ export class MazeEngine {
       nearestOrnamentDistance,
       nearestWeaponAngleDeg,
       nearestWeaponDistance,
+      nearestBatteryDistance,
       equippedWeapon: this.equippedWeapon,
       nextWeaponSpawnIn: Math.max(0, this.nextWeaponSpawnAt - this.elapsedSeconds),
       dodgeCooldown: this.dodgeCooldown,
@@ -2025,6 +2370,7 @@ export class MazeEngine {
       chimeCooldown: this.chimeCooldown,
       chimeAngleDeg: this.chimeAngleDeg,
       chimeTargetLabel: this.chimeTargetLabel,
+      chimeTargetDistance: this.chimeTargetDistance,
       statusBanner: this.statusBanner,
       muted: this.audio.isMuted(),
       hudHidden: this.hudHidden,
@@ -2035,6 +2381,7 @@ export class MazeEngine {
       alive: this.alive,
       spectating: this.spectating,
       chatOpen: this.chatOpen,
+      mapState,
       ...overrides,
     });
   }

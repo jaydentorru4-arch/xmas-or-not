@@ -20,6 +20,26 @@
           "type": "string",
           "pattern": "^#[0-9a-fA-F]{6}$"
         },
+        "scarfColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
+        },
+        "hatStyle": {
+          "type": "string",
+          "enum": ["hood", "beanie", "santa_hat", "ushanka"]
+        },
+        "friendCode": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 16,
+          "pattern": "^[A-Z0-9_\\-]+$"
+        },
+        "level": {
+          "type": "number"
+        },
+        "xp": {
+          "type": "number"
+        },
         "escapes": {
           "type": "number"
         },
@@ -35,7 +55,20 @@
           "format": "date-time"
         }
       },
-      "required": ["uid", "displayName", "coatColor", "escapes", "gamesPlayed", "createdAt", "updatedAt"]
+      "required": [
+        "uid",
+        "displayName",
+        "coatColor",
+        "scarfColor",
+        "hatStyle",
+        "friendCode",
+        "level",
+        "xp",
+        "escapes",
+        "gamesPlayed",
+        "createdAt",
+        "updatedAt"
+      ]
     },
     "PrivateUserInfo": {
       "title": "PrivateUserInfo",
@@ -63,6 +96,100 @@
         }
       },
       "required": ["uid", "email", "createdAt", "updatedAt"]
+    },
+    "FriendCodeLookup": {
+      "title": "FriendCodeLookup",
+      "description": "Public lookup mapping a short friend code to a survivor UID.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "friendCode": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 16,
+          "pattern": "^[A-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "friendCode", "createdAt"]
+    },
+    "FriendRecord": {
+      "title": "FriendRecord",
+      "description": "Bidirectional friend connection or request inside a user's friends subcollection.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "friendUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "coatColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
+        },
+        "scarfColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
+        },
+        "hatStyle": {
+          "type": "string",
+          "enum": ["hood", "beanie", "santa_hat", "ushanka"]
+        },
+        "friendCode": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 16,
+          "pattern": "^[A-Z0-9_\\-]+$"
+        },
+        "level": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending_sent", "pending_received", "accepted"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerUid",
+        "friendUid",
+        "displayName",
+        "coatColor",
+        "scarfColor",
+        "hatStyle",
+        "friendCode",
+        "level",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
     },
     "GlobalChatMessage": {
       "title": "GlobalChatMessage",
@@ -102,7 +229,7 @@
     },
     "GameRoom": {
       "title": "GameRoom",
-      "description": "Online multiplayer maze room state and shared ornament progression.",
+      "description": "Online multiplayer maze room state and shared progression.",
       "type": "object",
       "properties": {
         "roomId": {
@@ -131,6 +258,9 @@
           "type": "string",
           "enum": ["normal", "nightmare"]
         },
+        "level": {
+          "type": "number"
+        },
         "mazeSeed": {
           "type": "number"
         },
@@ -142,6 +272,9 @@
           "type": "array"
         },
         "collectedWeapons": {
+          "type": "array"
+        },
+        "collectedBatteries": {
           "type": "array"
         },
         "santaStunNonce": {
@@ -174,10 +307,12 @@
         "hostId",
         "hostName",
         "difficulty",
+        "level",
         "mazeSeed",
         "status",
         "collectedOrnaments",
         "collectedWeapons",
+        "collectedBatteries",
         "santaStunNonce",
         "ornamentsTotal",
         "exitUnlocked",
@@ -189,7 +324,7 @@
     },
     "RoomPlayer": {
       "title": "RoomPlayer",
-      "description": "Real-time player transform and status inside a multiplayer room.",
+      "description": "Real-time player transform, customization, and status inside a multiplayer room.",
       "type": "object",
       "properties": {
         "uid": {
@@ -212,6 +347,14 @@
         "coatColor": {
           "type": "string",
           "pattern": "^#[0-9a-fA-F]{6}$"
+        },
+        "scarfColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
+        },
+        "hatStyle": {
+          "type": "string",
+          "enum": ["hood", "beanie", "santa_hat", "ushanka"]
         },
         "x": {
           "type": "number"
@@ -241,6 +384,8 @@
         "roomId",
         "displayName",
         "coatColor",
+        "scarfColor",
+        "hatStyle",
         "x",
         "z",
         "yaw",
@@ -327,6 +472,14 @@
     "/users/{userId}/private/info": {
       "schema": { "$ref": "#/entities/PrivateUserInfo" },
       "description": "Owner-only PII record (email)."
+    },
+    "/users/{userId}/friends/{friendId}": {
+      "schema": { "$ref": "#/entities/FriendRecord" },
+      "description": "Bidirectional friend connections and requests."
+    },
+    "/friendCodes/{code}": {
+      "schema": { "$ref": "#/entities/FriendCodeLookup" },
+      "description": "Short friend code lookup mapping."
     },
     "/globalChat/{messageId}": {
       "schema": { "$ref": "#/entities/GlobalChatMessage" },

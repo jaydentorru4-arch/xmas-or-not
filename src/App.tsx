@@ -6,14 +6,20 @@ import { MenuOverlays } from './components/MenuOverlays';
 import { auth } from './firebase';
 import { MazeEngine } from './game/MazeEngine';
 import {
+  applyXpGain,
   ChatMessageData,
   DifficultyId,
+  FriendRecord,
   GameRoomData,
+  HatStyle,
   HudSnapshot,
   RoomPlayerData,
   SurvivorProfile,
+  xpForNextLevel,
 } from './game/types';
 import {
+  acceptFriendRequest,
+  collectRoomBattery,
   collectRoomOrnament,
   collectRoomWeapon,
   createMultiplayerRoom,
@@ -22,11 +28,15 @@ import {
   leaveMultiplayerRoom,
   loadOrCreateSurvivorProfile,
   recordMatchOutcome,
+  removeOrDeclineFriend,
+  sendFriendRequestByCode,
+  sendFriendRequestByUid,
   sendGlobalChatMessage,
   sendRoomChatMessage,
   signInSurvivorWithGoogle,
   signOutSurvivor,
   startMultiplayerRoom,
+  subscribeFriends,
   subscribeGlobalChat,
   subscribePublicRooms,
   subscribeRoom,
@@ -39,15 +49,41 @@ import {
   updateSurvivorAccount,
 } from './services/multiplayer';
 
+const LOCAL_PROGRESS_KEY = 'hollow_eve_progression_v1';
+
+function loadLocalProgression(): { level: number; xp: number } {
+  try {
+    const raw = window.localStorage.getItem(LOCAL_PROGRESS_KEY);
+    if (!raw) return { level: 1, xp: 0 };
+    const parsed = JSON.parse(raw) as { level?: number; xp?: number };
+    return {
+      level: Math.max(1, Math.min(50, Number(parsed.level || 1))),
+      xp: Math.max(0, Number(parsed.xp || 0)),
+    };
+  } catch {
+    return { level: 1, xp: 0 };
+  }
+}
+
+function saveLocalProgression(level: number, xp: number): void {
+  try {
+    window.localStorage.setItem(LOCAL_PROGRESS_KEY, JSON.stringify({ level, xp }));
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
 const INITIAL_HUD: HudSnapshot = {
   phase: 'menu',
   difficulty: 'normal',
+  level: 1,
   ornamentsCollected: 0,
-  ornamentsTotal: 6,
+  ornamentsTotal: 5,
   exitUnlocked: false,
   stamina: 100,
   battery: 100,
   flashlightOn: true,
+  darknessOverlay: 0,
   elapsedSeconds: 0,
   santaDistance: 50,
   santaAngleDeg: 0,
@@ -60,6 +96,7 @@ const INITIAL_HUD: HudSnapshot = {
   nearestOrnamentDistance: null,
   nearestWeaponAngleDeg: null,
   nearestWeaponDistance: null,
+  nearestBatteryDistance: null,
   equippedWeapon: null,
   nextWeaponSpawnIn: 60,
   dodgeCooldown: 0,
@@ -67,6 +104,7 @@ const INITIAL_HUD: HudSnapshot = {
   chimeCooldown: 0,
   chimeAngleDeg: null,
   chimeTargetLabel: '',
+  chimeTargetDistance: null,
   statusBanner: null,
   muted: false,
   hudHidden: false,
@@ -77,6 +115,7 @@ const INITIAL_HUD: HudSnapshot = {
   alive: true,
   spectating: false,
   chatOpen: false,
+  mapState: null,
 };
 
 export default function App() {
@@ -87,12 +126,27 @@ export default function App() {
 
   const [hud, setHud] = useState<HudSnapshot>(INITIAL_HUD);
   const [selectedDifficulty, setSelectedDifficulty] = useState<DifficultyId>('normal');
+  const [localProgress, setLocalProgress] = useState<{ level: number; xp: number }>(() =>
+    loadLocalProgression()
+  );
+  const [selectedLevel, setSelectedLevel] = useState<number>(() => loadLocalProgression().level);
+  const [lastMatchReward, setLastMatchReward] = useState<{
+    earnedXp: number;
+    leveledUp: boolean;
+    newLevel: number;
+  } | null>(null);
+  const [mapExpanded, setMapExpanded] = useState(false);
 
   // Firebase Auth & Survivor Account
   const [authLoading, setAuthLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<SurvivorProfile | null>(null);
+
+  // Friends State
+  const [friends, setFriends] = useState<FriendRecord[]>([]);
+  const [friendError, setFriendError] = useState<string | null>(null);
+  const [friendNotice, setFriendNotice] = useState<string | null>(null);
 
   // Lobby & Multiplayer Room State
   const [publicRooms, setPublicRooms] = useState<GameRoomData[]>([]);
@@ -102,6 +156,9 @@ export default function App() {
   const [roomPlayers, setRoomPlayers] = useState<RoomPlayerData[]>([]);
   const [roomChat, setRoomChat] = useState<ChatMessageData[]>([]);
   const [roomError, setRoomError] = useState<string | null>(null);
+
+  const maxUnlockedLevel = profile ? Math.max(profile.level, localProgress.level) : localProgress.level;
+  const currentXp = profile ? profile.xp : localProgress.xp;
 
   // Initialize Three.js WebGL Engine once
   useEffect(() => {
@@ -125,6 +182,7 @@ export default function App() {
       setUser(nextUser);
       if (!nextUser) {
         setProfile(null);
+        setFriends([]);
         setAuthLoading(false);
         return;
       }
@@ -133,6 +191,7 @@ export default function App() {
       try {
         const loaded = await loadOrCreateSurvivorProfile(nextUser);
         setProfile(loaded);
+        setSelectedLevel((prev) => Math.max(prev, loaded.level));
       } catch (err) {
         setAuthError(err instanceof Error ? err.message : 'Unable to load survivor profile.');
       } finally {
@@ -141,6 +200,13 @@ export default function App() {
     });
     return () => unsub();
   }, []);
+
+  // Subscribe to Friends when signed in
+  useEffect(() => {
+    if (!user || !profile) return;
+    const unsubFriends = subscribeFriends(profile.uid, setFriends);
+    return () => unsubFriends();
+  }, [user, profile?.uid]);
 
   // Subscribe to Global Chat & Open Public Rooms when signed in and in Menu
   useEffect(() => {
@@ -171,6 +237,7 @@ export default function App() {
           startedRoomKeyRef.current = `waiting:${room.roomId}`;
           engineRef.current?.enterWaitingRoom(
             room.difficulty,
+            room.level,
             room.mazeSeed,
             room.roomId,
             room.hostId === profile.uid,
@@ -184,6 +251,7 @@ export default function App() {
           outcomeRecordedRef.current = false;
           engineRef.current?.startMultiplayerSession({
             difficulty: room.difficulty,
+            level: room.level,
             mazeSeed: room.mazeSeed,
             roomId: room.roomId,
             isHost: room.hostId === profile.uid,
@@ -201,6 +269,9 @@ export default function App() {
               onCollectWeapon: (weaponId) => {
                 collectRoomWeapon(room.roomId, weaponId);
               },
+              onCollectBattery: (batteryId) => {
+                collectRoomBattery(room.roomId, batteryId);
+              },
               onTriggerSantaStun: () => {
                 triggerRoomSantaStun(room.roomId);
               },
@@ -211,6 +282,7 @@ export default function App() {
           room.collectedOrnaments,
           room.exitUnlocked,
           room.collectedWeapons ?? [],
+          room.collectedBatteries ?? [],
           room.santaStunNonce ?? 0
         );
       }
@@ -235,42 +307,86 @@ export default function App() {
     };
   }, [activeRoomId, profile]);
 
-  // Record match outcome to Survivor Profile stats once per finished match
+  // Record match outcome & grant XP/Level progression once per finished match
   useEffect(() => {
-    if (!profile) return;
     if ((hud.phase === 'escaped' || hud.phase === 'caught') && !outcomeRecordedRef.current) {
       outcomeRecordedRef.current = true;
+      setMapExpanded(false);
       const escaped = hud.phase === 'escaped';
-      recordMatchOutcome(profile.uid, escaped)
-        .then(() => {
-          setProfile((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  escapes: prev.escapes + (escaped ? 1 : 0),
-                  gamesPlayed: prev.gamesPlayed + 1,
-                }
-              : prev
-          );
-        })
-        .catch(() => {});
+      const earnedXp = escaped
+        ? Math.max(xpForNextLevel(hud.level), 110 + hud.level * 65 + (hud.difficulty === 'nightmare' ? 45 : 0))
+        : 15 + hud.ornamentsCollected * 15;
+
+      // Always update local progression too
+      const localNext = applyXpGain(localProgress.level, localProgress.xp, earnedXp);
+      saveLocalProgression(localNext.level, localNext.xp);
+      setLocalProgress({ level: localNext.level, xp: localNext.xp });
+
+      if (profile) {
+        recordMatchOutcome(profile.uid, escaped, earnedXp)
+          .then((res) => {
+            if (res) {
+              setProfile((prev) =>
+                prev
+                  ? {
+                      ...prev,
+                      level: res.level,
+                      xp: res.xp,
+                      escapes: res.escapes,
+                      gamesPlayed: res.gamesPlayed,
+                    }
+                  : prev
+              );
+              setLastMatchReward({
+                earnedXp,
+                leveledUp: res.leveledUp,
+                newLevel: res.level,
+              });
+              if (res.leveledUp) {
+                setSelectedLevel(res.level);
+              }
+            }
+          })
+          .catch(() => {
+            setLastMatchReward({
+              earnedXp,
+              leveledUp: localNext.leveledUp,
+              newLevel: localNext.level,
+            });
+          });
+      } else {
+        setLastMatchReward({
+          earnedXp,
+          leveledUp: localNext.leveledUp,
+          newLevel: localNext.level,
+        });
+        if (localNext.leveledUp) {
+          setSelectedLevel(localNext.level);
+        }
+      }
     } else if (hud.phase === 'playing') {
       outcomeRecordedRef.current = false;
+      setLastMatchReward(null);
+    } else {
+      setMapExpanded(false);
     }
-  }, [hud.phase, profile]);
+  }, [hud.phase, hud.level, hud.difficulty, hud.ornamentsCollected, profile]);
 
-  // Global keyboard shortcut (T or Enter) to open in-game chat during multiplayer
+  // Global keyboard shortcuts: Tab for Tactical Map, T/Enter for Multiplayer Chat
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (hud.phase !== 'playing' || !hud.isMultiplayer || hud.chatOpen) return;
-      if (
-        e.target instanceof HTMLInputElement ||
-        e.target instanceof HTMLTextAreaElement
-      ) {
+      if (hud.phase !== 'playing') return;
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
         return;
       }
-      if (e.code === 'KeyT' || e.code === 'Enter') {
+      if (e.code === 'Tab' && !hud.chatOpen) {
         e.preventDefault();
+        setMapExpanded((prev) => !prev);
+        return;
+      }
+      if (hud.isMultiplayer && !hud.chatOpen && (e.code === 'KeyT' || e.code === 'Enter')) {
+        e.preventDefault();
+        setMapExpanded(false);
         engineRef.current?.setChatOpen(true);
       }
     };
@@ -278,9 +394,35 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [hud.phase, hud.isMultiplayer, hud.chatOpen]);
 
+  const formatError = (err: unknown, fallback: string): string => {
+    if (!(err instanceof Error)) return fallback;
+    if (err.message.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(err.message) as { error?: string };
+        return parsed.error || fallback;
+      } catch {
+        return fallback;
+      }
+    }
+    return err.message;
+  };
+
   const handleSelectDifficulty = (id: DifficultyId) => {
     setSelectedDifficulty(id);
-    engineRef.current?.setDifficulty(id);
+    engineRef.current?.setDifficulty(id, selectedLevel);
+  };
+
+  const handleSelectLevel = (level: number) => {
+    const clamped = Math.max(1, Math.min(maxUnlockedLevel, level));
+    setSelectedLevel(clamped);
+    engineRef.current?.setSelectedLevel(clamped);
+  };
+
+  const handleStartSolo = (levelOverride?: number) => {
+    const lvl = levelOverride !== undefined ? Math.max(1, Math.min(50, levelOverride)) : selectedLevel;
+    setSelectedLevel(lvl);
+    setMapExpanded(false);
+    engineRef.current?.startNewGame(selectedDifficulty, lvl);
   };
 
   const handleSignIn = async () => {
@@ -303,35 +445,72 @@ export default function App() {
     await signOutSurvivor();
   };
 
-  const handleUpdateAccount = async (displayName: string, coatColor: string) => {
+  const handleUpdateAccount = async (updates: {
+    displayName: string;
+    coatColor: string;
+    scarfColor: string;
+    hatStyle: HatStyle;
+  }) => {
     if (!profile) return;
-    const updated = await updateSurvivorAccount(profile.uid, displayName, coatColor);
+    const updated = await updateSurvivorAccount(profile.uid, updates);
     setProfile(updated);
   };
 
-  const formatRoomError = (err: unknown, fallback: string): string => {
-    if (!(err instanceof Error)) return fallback;
-    if (err.message.startsWith('{')) {
-      try {
-        const parsed = JSON.parse(err.message) as { error?: string };
-        return parsed.error || fallback;
-      } catch {
-        return fallback;
-      }
+  const handleAddFriendByCode = async (code: string) => {
+    if (!profile) return;
+    setFriendError(null);
+    setFriendNotice(null);
+    try {
+      await sendFriendRequestByCode(profile, code);
+      setFriendNotice(`Friend request sent to ${code.toUpperCase()}!`);
+    } catch (err) {
+      setFriendError(formatError(err, 'Could not add friend.'));
     }
-    return err.message;
+  };
+
+  const handleAddFriendByUid = async (targetUid: string) => {
+    if (!profile) return;
+    setFriendError(null);
+    setFriendNotice(null);
+    try {
+      await sendFriendRequestByUid(profile, targetUid);
+      setFriendNotice('Friend request sent!');
+    } catch (err) {
+      setFriendError(formatError(err, 'Could not send friend request.'));
+    }
+  };
+
+  const handleAcceptFriend = async (friendUid: string) => {
+    if (!profile) return;
+    setFriendError(null);
+    try {
+      await acceptFriendRequest(profile, friendUid);
+    } catch (err) {
+      setFriendError(formatError(err, 'Could not accept friend request.'));
+    }
+  };
+
+  const handleRemoveFriend = async (friendUid: string) => {
+    if (!profile) return;
+    await removeOrDeclineFriend(profile.uid, friendUid);
   };
 
   const handleCreateRoom = async (roomName: string, isPublic: boolean) => {
     if (!profile) return;
     setRoomError(null);
     try {
-      const room = await createMultiplayerRoom(profile, roomName, selectedDifficulty, isPublic);
+      const room = await createMultiplayerRoom(
+        profile,
+        roomName,
+        selectedDifficulty,
+        selectedLevel,
+        isPublic
+      );
       startedRoomKeyRef.current = null;
       setActiveRoom(room);
       setActiveRoomId(room.roomId);
     } catch (err) {
-      setRoomError(formatRoomError(err, 'Could not create room.'));
+      setRoomError(formatError(err, 'Could not create room.'));
     }
   };
 
@@ -344,7 +523,7 @@ export default function App() {
       setActiveRoom(room);
       setActiveRoomId(room.roomId);
     } catch (err) {
-      setRoomError(formatRoomError(err, 'Could not join room.'));
+      setRoomError(formatError(err, 'Could not join room.'));
     }
   };
 
@@ -386,6 +565,8 @@ export default function App() {
       <GameHUD
         hud={hud}
         teammateCount={Math.max(1, roomPlayers.length)}
+        mapExpanded={mapExpanded}
+        onToggleMapExpanded={() => setMapExpanded((prev) => !prev)}
         onToggleMute={() => engineRef.current?.toggleMute()}
         onPause={() => engineRef.current?.pauseGame()}
         onToggleFlashlight={() => engineRef.current?.toggleFlashlight()}
@@ -408,8 +589,13 @@ export default function App() {
       <MenuOverlays
         hud={hud}
         selectedDifficulty={selectedDifficulty}
+        selectedLevel={selectedLevel}
+        maxUnlockedLevel={maxUnlockedLevel}
+        currentXp={currentXp}
+        lastMatchReward={lastMatchReward}
         onSelectDifficulty={handleSelectDifficulty}
-        onStartSolo={() => engineRef.current?.startNewGame(selectedDifficulty)}
+        onSelectLevel={handleSelectLevel}
+        onStartSolo={handleStartSolo}
         onResume={() => engineRef.current?.resumeGame()}
         onReturnMenu={() => engineRef.current?.returnToMenu()}
         authLoading={authLoading}
@@ -418,6 +604,13 @@ export default function App() {
         onSignIn={handleSignIn}
         onSignOut={handleSignOut}
         onUpdateAccount={handleUpdateAccount}
+        friends={friends}
+        friendError={friendError}
+        friendNotice={friendNotice}
+        onAddFriendByCode={handleAddFriendByCode}
+        onAddFriendByUid={handleAddFriendByUid}
+        onAcceptFriend={handleAcceptFriend}
+        onRemoveFriend={handleRemoveFriend}
         publicRooms={publicRooms}
         activeRoom={activeRoom}
         roomPlayers={roomPlayers}

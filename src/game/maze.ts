@@ -1,6 +1,6 @@
 import { GridCoord, MazeData } from './types';
 
-export const MAZE_SIZE = 27; // Larger 27x27 labyrinth (108m x 108m)
+export const DEFAULT_MAZE_SIZE = 27;
 export const CELL_SIZE = 4.0;
 export const WALL_HEIGHT = 3.8;
 
@@ -22,7 +22,12 @@ function shuffle<T>(arr: T[], rand: () => number): T[] {
   return arr;
 }
 
-export function cellToWorld(r: number, c: number, size = MAZE_SIZE, cellSize = CELL_SIZE): { x: number; z: number } {
+export function cellToWorld(
+  r: number,
+  c: number,
+  size = DEFAULT_MAZE_SIZE,
+  cellSize = CELL_SIZE
+): { x: number; z: number } {
   const half = ((size - 1) * cellSize) / 2;
   return {
     x: c * cellSize - half,
@@ -30,17 +35,29 @@ export function cellToWorld(r: number, c: number, size = MAZE_SIZE, cellSize = C
   };
 }
 
-export function worldToCell(x: number, z: number, size = MAZE_SIZE, cellSize = CELL_SIZE): GridCoord {
+export function worldToCell(
+  x: number,
+  z: number,
+  size = DEFAULT_MAZE_SIZE,
+  cellSize = CELL_SIZE
+): GridCoord {
   const half = ((size - 1) * cellSize) / 2;
   return {
-    c: Math.round((x + half) / cellSize),
-    r: Math.round((z + half) / cellSize),
+    c: Math.max(0, Math.min(size - 1, Math.round((x + half) / cellSize))),
+    r: Math.max(0, Math.min(size - 1, Math.round((z + half) / cellSize))),
   };
 }
 
-export function generateMaze(ornamentCount = 6, seed = Date.now()): MazeData {
+export function generateMaze(
+  ornamentCount = 6,
+  seed = Date.now(),
+  mazeSize = DEFAULT_MAZE_SIZE,
+  batteryCount = 6
+): MazeData {
   const rand = createRng(seed);
-  const size = MAZE_SIZE;
+  // Ensure mazeSize is odd and >= 15
+  const rawSize = Math.max(15, Math.min(39, Math.floor(mazeSize)));
+  const size = rawSize % 2 === 1 ? rawSize : rawSize + 1;
   const grid: number[][] = Array.from({ length: size }, () => Array(size).fill(1));
 
   // Recursive backtracker on odd cells
@@ -83,8 +100,10 @@ export function generateMaze(ornamentCount = 6, seed = Date.now()): MazeData {
   for (let r = 2; r < size - 2; r++) {
     for (let c = 2; c < size - 2; c++) {
       if (grid[r][c] !== 1) continue;
-      const horizOpen = grid[r][c - 1] === 0 && grid[r][c + 1] === 0 && grid[r - 1][c] === 1 && grid[r + 1][c] === 1;
-      const vertOpen = grid[r - 1][c] === 0 && grid[r + 1][c] === 0 && grid[r][c - 1] === 1 && grid[r][c + 1] === 1;
+      const horizOpen =
+        grid[r][c - 1] === 0 && grid[r][c + 1] === 0 && grid[r - 1][c] === 1 && grid[r + 1][c] === 1;
+      const vertOpen =
+        grid[r - 1][c] === 0 && grid[r + 1][c] === 0 && grid[r][c - 1] === 1 && grid[r][c + 1] === 1;
       if (horizOpen || vertOpen) {
         candidates.push({ r, c });
       }
@@ -122,12 +141,12 @@ export function generateMaze(ornamentCount = 6, seed = Date.now()): MazeData {
   const santaCandidate =
     openCells.find(
       (cell) =>
-        cell.dist >= 20 &&
+        cell.dist >= Math.max(16, size - 7) &&
         Math.abs(cell.r - exitCell.r) + Math.abs(cell.c - exitCell.c) >= 8
     ) ?? openCells[1];
   const santaSpawn: GridCoord = { r: santaCandidate.r, c: santaCandidate.c };
 
-  // Distribute ornaments across distinct regions of the 27x27 maze
+  // Distribute ornaments across distinct regions
   const ornaments: GridCoord[] = [];
   const eligible = openCells.filter(
     (cell) =>
@@ -143,12 +162,58 @@ export function generateMaze(ornamentCount = 6, seed = Date.now()): MazeData {
       if (ornaments.length >= ornamentCount) break;
       const already = ornaments.some((o) => o.r === cand.r && o.c === cand.c);
       if (already) continue;
-      const farEnough = ornaments.every((o) => Math.abs(o.r - cand.r) + Math.abs(o.c - cand.c) >= minSpacing);
+      const farEnough = ornaments.every(
+        (o) => Math.abs(o.r - cand.r) + Math.abs(o.c - cand.c) >= minSpacing
+      );
       if (farEnough) {
         ornaments.push({ r: cand.r, c: cand.c });
       }
     }
     minSpacing--;
+  }
+
+  // Distribute flashlight batteries across separate cells
+  const batteries: GridCoord[] = [];
+  const batteryEligible = openCells.filter(
+    (cell) =>
+      cell.dist >= 4 &&
+      (cell.r !== exitApproachR || cell.c !== exitApproachC) &&
+      !ornaments.some((o) => o.r === cell.r && o.c === cell.c)
+  );
+  shuffle(batteryEligible, rand);
+
+  let batSpacing = 8;
+  while (batteries.length < batteryCount && batSpacing >= 2) {
+    for (const cand of batteryEligible) {
+      if (batteries.length >= batteryCount) break;
+      if (batteries.some((b) => b.r === cand.r && b.c === cand.c)) continue;
+      const farEnough = batteries.every(
+        (b) => Math.abs(b.r - cand.r) + Math.abs(b.c - cand.c) >= batSpacing
+      );
+      if (farEnough) {
+        batteries.push({ r: cand.r, c: cand.c });
+      }
+    }
+    batSpacing--;
+  }
+
+  // Distribute elf traps across open cells
+  const traps: GridCoord[] = [];
+  const trapEligible = openCells.filter(
+    (cell) =>
+      cell.dist >= 3 &&
+      (cell.r !== playerSpawn.r || cell.c !== playerSpawn.c) &&
+      !ornaments.some((o) => o.r === cell.r && o.c === cell.c) &&
+      !batteries.some((b) => b.r === cell.r && b.c === cell.c)
+  );
+  shuffle(trapEligible, rand);
+
+  const trapCount = Math.min(14, 6 + Math.floor(ornamentCount * 0.8));
+  for (const cand of trapEligible) {
+    if (traps.length >= trapCount) break;
+    if (traps.every((t) => Math.abs(t.r - cand.r) + Math.abs(t.c - cand.c) >= 3)) {
+      traps.push({ r: cand.r, c: cand.c });
+    }
   }
 
   return {
@@ -160,6 +225,8 @@ export function generateMaze(ornamentCount = 6, seed = Date.now()): MazeData {
     santaSpawn,
     exitCell,
     ornaments,
+    batteries,
+    traps,
   };
 }
 
@@ -183,7 +250,14 @@ export function computeDistanceMap(grid: number[][], start: GridCoord): number[]
     for (const [dr, dc] of dirs) {
       const nr = curr.r + dr;
       const nc = curr.c + dc;
-      if (nr >= 0 && nr < size && nc >= 0 && nc < size && grid[nr][nc] === 0 && dist[nr][nc] > nextDist) {
+      if (
+        nr >= 0 &&
+        nr < size &&
+        nc >= 0 &&
+        nc < size &&
+        grid[nr][nc] === 0 &&
+        dist[nr][nc] > nextDist
+      ) {
         dist[nr][nc] = nextDist;
         queue.push({ r: nr, c: nc });
       }
@@ -192,8 +266,13 @@ export function computeDistanceMap(grid: number[][], start: GridCoord): number[]
   return dist;
 }
 
-export function findNextStepBFS(grid: number[][], from: GridCoord, to: GridCoord): GridCoord | null {
-  if (from.r === to.r && from.c === to.c) return to;
+export function findPathBFS(
+  grid: number[][],
+  from: GridCoord,
+  to: GridCoord,
+  maxSteps = 12
+): GridCoord[] {
+  if (from.r === to.r && from.c === to.c) return [];
   const size = grid.length;
   const visited = Array.from({ length: size }, () => Array(size).fill(false));
   const parent: (GridCoord | null)[][] = Array.from({ length: size }, () => Array(size).fill(null));
@@ -218,7 +297,14 @@ export function findNextStepBFS(grid: number[][], from: GridCoord, to: GridCoord
     for (const [dr, dc] of dirs) {
       const nr = curr.r + dr;
       const nc = curr.c + dc;
-      if (nr >= 0 && nr < size && nc >= 0 && nc < size && grid[nr][nc] === 0 && !visited[nr][nc]) {
+      if (
+        nr >= 0 &&
+        nr < size &&
+        nc >= 0 &&
+        nc < size &&
+        grid[nr][nc] === 0 &&
+        !visited[nr][nc]
+      ) {
         visited[nr][nc] = true;
         parent[nr][nc] = curr;
         queue.push({ r: nr, c: nc });
@@ -226,16 +312,21 @@ export function findNextStepBFS(grid: number[][], from: GridCoord, to: GridCoord
     }
   }
 
-  if (!found) return null;
-  let step: GridCoord = to;
-  while (parent[step.r][step.c]) {
-    const p = parent[step.r][step.c]!;
-    if (p.r === from.r && p.c === from.c) {
-      return step;
-    }
-    step = p;
+  if (!found) return [];
+  const reversed: GridCoord[] = [];
+  let curr: GridCoord = to;
+  while (parent[curr.r][curr.c]) {
+    reversed.push(curr);
+    curr = parent[curr.r][curr.c]!;
+    if (curr.r === from.r && curr.c === from.c) break;
   }
-  return step;
+  reversed.reverse();
+  return reversed.slice(0, maxSteps);
+}
+
+export function findNextStepBFS(grid: number[][], from: GridCoord, to: GridCoord): GridCoord | null {
+  const path = findPathBFS(grid, from, to, 1);
+  return path.length > 0 ? path[0] : from.r === to.r && from.c === to.c ? to : null;
 }
 
 export function hasLineOfSight(
@@ -257,7 +348,13 @@ export function hasLineOfSight(
     const px = ax + dx * t;
     const pz = az + dz * t;
     const cell = worldToCell(px, pz, size, cellSize);
-    if (cell.r < 0 || cell.r >= size || cell.c < 0 || cell.c >= size || grid[cell.r][cell.c] === 1) {
+    if (
+      cell.r < 0 ||
+      cell.r >= size ||
+      cell.c < 0 ||
+      cell.c >= size ||
+      grid[cell.r][cell.c] === 1
+    ) {
       return false;
     }
   }

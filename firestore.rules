@@ -36,26 +36,45 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function isValidFriendCode(code) {
+      return code is string && code.size() >= 4 && code.size() <= 16 && code.matches('^[A-Z0-9_\\-]+$');
+    }
+
     function isValidColor(color) {
       return color is string && color.size() == 7 && color.matches('^#[0-9a-fA-F]{6}$');
     }
 
+    function isValidHatStyle(style) {
+      return style is string && style in ['hood', 'beanie', 'santa_hat', 'ushanka'];
+    }
+
     // Entity validation blueprints
     function isValidPublicProfile(data) {
-      return data.keys().hasAll(['uid', 'displayName', 'coatColor', 'escapes', 'gamesPlayed', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'displayName', 'coatColor', 'escapes', 'gamesPlayed', 'createdAt', 'updatedAt'])
+      return data.keys().hasAll([
+          'uid', 'displayName', 'coatColor', 'scarfColor', 'hatStyle',
+          'friendCode', 'level', 'xp', 'escapes', 'gamesPlayed', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'displayName', 'coatColor', 'scarfColor', 'hatStyle',
+          'friendCode', 'level', 'xp', 'escapes', 'gamesPlayed', 'createdAt', 'updatedAt'
+        ])
         && isValidId(data.uid)
         && data.uid == request.auth.uid
         && data.displayName is string
         && data.displayName.size() >= 2
         && data.displayName.size() <= 24
         && isValidColor(data.coatColor)
+        && isValidColor(data.scarfColor)
+        && isValidHatStyle(data.hatStyle)
+        && isValidFriendCode(data.friendCode)
+        && data.level is number
+        && data.level >= 1 && data.level <= 50
+        && data.xp is number
+        && data.xp >= 0 && data.xp <= 1000000
         && data.escapes is number
-        && data.escapes >= 0
-        && data.escapes <= 100000
+        && data.escapes >= 0 && data.escapes <= 100000
         && data.gamesPlayed is number
-        && data.gamesPlayed >= 0
-        && data.gamesPlayed <= 100000
+        && data.gamesPlayed >= 0 && data.gamesPlayed <= 100000
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -72,89 +91,122 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidFriendCodeLookup(data) {
+      return data.keys().hasAll(['uid', 'friendCode', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'friendCode', 'createdAt'])
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && isValidFriendCode(data.friendCode)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidFriendRecord(data) {
+      return data.keys().hasAll([
+          'ownerUid', 'friendUid', 'displayName', 'coatColor', 'scarfColor',
+          'hatStyle', 'friendCode', 'level', 'status', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerUid', 'friendUid', 'displayName', 'coatColor', 'scarfColor',
+          'hatStyle', 'friendCode', 'level', 'status', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.ownerUid)
+        && isValidId(data.friendUid)
+        && data.ownerUid != data.friendUid
+        && data.displayName is string
+        && data.displayName.size() >= 1 && data.displayName.size() <= 24
+        && isValidColor(data.coatColor)
+        && isValidColor(data.scarfColor)
+        && isValidHatStyle(data.hatStyle)
+        && isValidFriendCode(data.friendCode)
+        && data.level is number
+        && data.level >= 1 && data.level <= 50
+        && data.status in ['pending_sent', 'pending_received', 'accepted']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     function isValidGlobalChatMessage(data) {
       return data.keys().hasAll(['senderId', 'senderName', 'coatColor', 'channel', 'text', 'createdAt'])
         && data.keys().hasOnly(['senderId', 'senderName', 'coatColor', 'channel', 'text', 'createdAt'])
         && isValidId(data.senderId)
         && data.senderId == request.auth.uid
         && data.senderName is string
-        && data.senderName.size() >= 1
-        && data.senderName.size() <= 24
+        && data.senderName.size() >= 1 && data.senderName.size() <= 24
         && isValidColor(data.coatColor)
         && data.channel == 'global'
         && data.text is string
-        && data.text.size() >= 1
-        && data.text.size() <= 240
+        && data.text.size() >= 1 && data.text.size() <= 240
         && data.createdAt is timestamp;
     }
 
     function isValidRoom(data) {
       return data.keys().hasAll([
-          'roomId', 'name', 'hostId', 'hostName', 'difficulty', 'mazeSeed',
-          'status', 'collectedOrnaments', 'collectedWeapons', 'santaStunNonce',
-          'ornamentsTotal', 'exitUnlocked', 'isPublic', 'playerCount', 'createdAt', 'updatedAt'
+          'roomId', 'name', 'hostId', 'hostName', 'difficulty', 'level', 'mazeSeed',
+          'status', 'collectedOrnaments', 'collectedWeapons', 'collectedBatteries',
+          'santaStunNonce', 'ornamentsTotal', 'exitUnlocked', 'isPublic', 'playerCount',
+          'createdAt', 'updatedAt'
         ])
         && data.keys().hasOnly([
-          'roomId', 'name', 'hostId', 'hostName', 'difficulty', 'mazeSeed',
-          'status', 'collectedOrnaments', 'collectedWeapons', 'santaStunNonce',
-          'ornamentsTotal', 'exitUnlocked', 'isPublic', 'playerCount', 'createdAt', 'updatedAt'
+          'roomId', 'name', 'hostId', 'hostName', 'difficulty', 'level', 'mazeSeed',
+          'status', 'collectedOrnaments', 'collectedWeapons', 'collectedBatteries',
+          'santaStunNonce', 'ornamentsTotal', 'exitUnlocked', 'isPublic', 'playerCount',
+          'createdAt', 'updatedAt'
         ])
         && isValidId(data.roomId)
-        && data.roomId.size() >= 4
-        && data.roomId.size() <= 32
+        && data.roomId.size() >= 4 && data.roomId.size() <= 32
         && data.name is string
-        && data.name.size() >= 2
-        && data.name.size() <= 40
+        && data.name.size() >= 2 && data.name.size() <= 40
         && isValidId(data.hostId)
         && data.hostName is string
-        && data.hostName.size() >= 1
-        && data.hostName.size() <= 24
+        && data.hostName.size() >= 1 && data.hostName.size() <= 24
         && data.difficulty in ['normal', 'nightmare']
+        && data.level is number
+        && data.level >= 1 && data.level <= 50
         && data.mazeSeed is number
         && data.status in ['waiting', 'playing', 'finished']
         && data.collectedOrnaments is list
-        && data.collectedOrnaments.size() <= 10
+        && data.collectedOrnaments.size() <= 12
         && (data.collectedOrnaments.size() == 0 || data.collectedOrnaments[0] is number)
         && data.collectedWeapons is list
         && data.collectedWeapons.size() <= 40
         && (data.collectedWeapons.size() == 0 || data.collectedWeapons[0] is number)
+        && data.collectedBatteries is list
+        && data.collectedBatteries.size() <= 30
+        && (data.collectedBatteries.size() == 0 || data.collectedBatteries[0] is number)
         && data.santaStunNonce is number
-        && data.santaStunNonce >= 0
-        && data.santaStunNonce <= 10000
+        && data.santaStunNonce >= 0 && data.santaStunNonce <= 10000
         && data.ornamentsTotal is number
-        && data.ornamentsTotal >= 1
-        && data.ornamentsTotal <= 10
+        && data.ornamentsTotal >= 1 && data.ornamentsTotal <= 12
         && data.exitUnlocked is bool
         && data.isPublic is bool
         && data.playerCount is number
-        && data.playerCount >= 0
-        && data.playerCount <= 12
+        && data.playerCount >= 0 && data.playerCount <= 12
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
 
     function isValidRoomPlayer(data) {
       return data.keys().hasAll([
-          'uid', 'roomId', 'displayName', 'coatColor',
+          'uid', 'roomId', 'displayName', 'coatColor', 'scarfColor', 'hatStyle',
           'x', 'z', 'yaw', 'flashlightOn', 'alive', 'escaped', 'updatedAt'
         ])
         && data.keys().hasOnly([
-          'uid', 'roomId', 'displayName', 'coatColor',
+          'uid', 'roomId', 'displayName', 'coatColor', 'scarfColor', 'hatStyle',
           'x', 'z', 'yaw', 'flashlightOn', 'alive', 'escaped', 'updatedAt'
         ])
         && isValidId(data.uid)
         && data.uid == request.auth.uid
         && isValidId(data.roomId)
-        && data.roomId.size() >= 4
-        && data.roomId.size() <= 32
+        && data.roomId.size() >= 4 && data.roomId.size() <= 32
         && data.displayName is string
-        && data.displayName.size() >= 1
-        && data.displayName.size() <= 24
+        && data.displayName.size() >= 1 && data.displayName.size() <= 24
         && isValidColor(data.coatColor)
+        && isValidColor(data.scarfColor)
+        && isValidHatStyle(data.hatStyle)
         && data.x is number
-        && data.x >= -200 && data.x <= 200
+        && data.x >= -260 && data.x <= 260
         && data.z is number
-        && data.z >= -200 && data.z <= 200
+        && data.z >= -260 && data.z <= 260
         && data.yaw is number
         && data.flashlightOn is bool
         && data.alive is bool
@@ -166,9 +218,9 @@ service cloud.firestore {
       return data.keys().hasAll(['x', 'z', 'yaw', 'speed', 'alerted', 'stunRemaining', 'updatedAt'])
         && data.keys().hasOnly(['x', 'z', 'yaw', 'speed', 'alerted', 'stunRemaining', 'updatedAt'])
         && data.x is number
-        && data.x >= -200 && data.x <= 200
+        && data.x >= -260 && data.x <= 260
         && data.z is number
-        && data.z >= -200 && data.z <= 200
+        && data.z >= -260 && data.z <= 260
         && data.yaw is number
         && data.speed is number
         && data.speed >= 0 && data.speed <= 20
@@ -184,15 +236,12 @@ service cloud.firestore {
         && isValidId(data.senderId)
         && data.senderId == request.auth.uid
         && data.senderName is string
-        && data.senderName.size() >= 1
-        && data.senderName.size() <= 24
+        && data.senderName.size() >= 1 && data.senderName.size() <= 24
         && isValidColor(data.coatColor)
         && isValidId(data.roomId)
-        && data.roomId.size() >= 4
-        && data.roomId.size() <= 32
+        && data.roomId.size() >= 4 && data.roomId.size() <= 32
         && data.text is string
-        && data.text.size() >= 1
-        && data.text.size() <= 240
+        && data.text.size() >= 1 && data.text.size() <= 240
         && data.createdAt is timestamp;
     }
 
@@ -211,7 +260,10 @@ service cloud.firestore {
         && incoming().uid == existing().uid
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'coatColor', 'escapes', 'gamesPlayed', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'displayName', 'coatColor', 'scarfColor', 'hatStyle',
+          'friendCode', 'level', 'xp', 'escapes', 'gamesPlayed', 'updatedAt'
+        ]);
       allow delete: if false;
     }
 
@@ -232,6 +284,67 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'updatedAt']);
       allow delete: if false;
+    }
+
+    // Friends Subcollection (owner reads/lists own; sender/recipient create/accept/remove)
+    match /users/{userId}/friends/{friendId} {
+      allow get: if isOwner(userId) && isValidId(userId) && isValidId(friendId);
+      allow list: if isOwner(userId) && isValidId(userId) && existing().ownerUid == userId;
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && isValidId(friendId)
+        && userId != friendId
+        && isValidFriendRecord(incoming())
+        && incoming().ownerUid == userId
+        && incoming().friendUid == friendId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          (request.auth.uid == userId && incoming().status == 'pending_sent')
+          ||
+          (request.auth.uid == friendId && incoming().status == 'pending_received')
+        );
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && isValidId(friendId)
+        && isValidFriendRecord(incoming())
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().friendUid == existing().friendUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (
+            request.auth.uid == userId
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'displayName', 'coatColor', 'scarfColor', 'hatStyle', 'level', 'updatedAt'
+            ])
+          )
+          ||
+          (
+            request.auth.uid == friendId
+            && existing().status == 'pending_sent'
+            && incoming().status == 'accepted'
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'displayName', 'coatColor', 'scarfColor', 'hatStyle', 'level', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isVerifiedUser()
+        && isValidId(userId)
+        && isValidId(friendId)
+        && (request.auth.uid == userId || request.auth.uid == friendId);
+    }
+
+    // Short Friend Code Lookup (no PII, get only)
+    match /friendCodes/{code} {
+      allow get: if isSignedIn() && isValidFriendCode(code);
+      allow list: if false;
+      allow create: if isVerifiedUser()
+        && isValidFriendCode(code)
+        && isValidFriendCodeLookup(incoming())
+        && incoming().friendCode == code
+        && incoming().createdAt == request.time;
+      allow update, delete: if false;
     }
 
     // Global Lobby Chat
@@ -265,6 +378,7 @@ service cloud.firestore {
         && incoming().hostId == existing().hostId
         && incoming().mazeSeed == existing().mazeSeed
         && incoming().difficulty == existing().difficulty
+        && incoming().level == existing().level
         && incoming().ornamentsTotal == existing().ornamentsTotal
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
@@ -272,13 +386,19 @@ service cloud.firestore {
           // Action 1: Host controls match lifecycle
           (
             existing().hostId == request.auth.uid
-            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'playerCount', 'collectedOrnaments', 'collectedWeapons', 'santaStunNonce', 'exitUnlocked', 'updatedAt'])
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'playerCount', 'collectedOrnaments', 'collectedWeapons',
+              'collectedBatteries', 'santaStunNonce', 'exitUnlocked', 'updatedAt'
+            ])
           )
           ||
-          // Action 2: Joined survivor collects ornaments, weapons, triggers stun, or updates headcount
+          // Action 2: Joined survivor collects ornaments, weapons, batteries, triggers stun, or updates headcount
           (
             exists(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid))
-            && incoming().diff(existing()).affectedKeys().hasOnly(['playerCount', 'collectedOrnaments', 'collectedWeapons', 'santaStunNonce', 'exitUnlocked', 'updatedAt'])
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'playerCount', 'collectedOrnaments', 'collectedWeapons',
+              'collectedBatteries', 'santaStunNonce', 'exitUnlocked', 'updatedAt'
+            ])
           )
         );
       allow delete: if isVerifiedUser() && isValidId(roomId) && existing().hostId == request.auth.uid;
@@ -305,8 +425,8 @@ service cloud.firestore {
           && incoming().roomId == existing().roomId
           && incoming().updatedAt == request.time
           && incoming().diff(existing()).affectedKeys().hasOnly([
-            'displayName', 'coatColor', 'x', 'z', 'yaw',
-            'flashlightOn', 'alive', 'escaped', 'updatedAt'
+            'displayName', 'coatColor', 'scarfColor', 'hatStyle',
+            'x', 'z', 'yaw', 'flashlightOn', 'alive', 'escaped', 'updatedAt'
           ]);
         allow delete: if isVerifiedOwner(playerId) && isValidId(roomId) && isValidId(playerId);
       }

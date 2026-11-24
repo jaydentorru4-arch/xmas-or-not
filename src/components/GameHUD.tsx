@@ -6,6 +6,7 @@ import {
   Compass,
   Crosshair,
   Flashlight,
+  Map as MapIcon,
   MessageSquare,
   Pause,
   Star,
@@ -15,10 +16,13 @@ import {
   Wind,
 } from 'lucide-react';
 import { HudSnapshot, WEAPON_SPECS } from '../game/types';
+import { MazeMap } from './MazeMap';
 
 interface GameHUDProps {
   hud: HudSnapshot;
   teammateCount: number;
+  mapExpanded: boolean;
+  onToggleMapExpanded: () => void;
   onToggleMute: () => void;
   onPause: () => void;
   onToggleFlashlight: () => void;
@@ -71,6 +75,8 @@ function angleToPercent(relDeg: number): number {
 export const GameHUD: React.FC<GameHUDProps> = ({
   hud,
   teammateCount,
+  mapExpanded,
+  onToggleMapExpanded,
   onToggleMute,
   onPause,
   onToggleFlashlight,
@@ -134,6 +140,18 @@ export const GameHUD: React.FC<GameHUDProps> = ({
 
   return (
     <div className="fixed inset-0 z-10 pointer-events-none">
+      {/* Flashlight Depleted / Off Darkness Overlay */}
+      {hud.darknessOverlay > 0.01 && (
+        <div
+          className="absolute inset-0 pointer-events-none transition-opacity duration-100"
+          style={{
+            background: `radial-gradient(circle at 50% 50%, rgba(2,4,10,${(hud.darknessOverlay * 0.72).toFixed(
+              3
+            )}) 10%, rgba(2,4,10,${Math.min(0.92, hud.darknessOverlay * 1.18).toFixed(3)}) 100%)`,
+          }}
+        />
+      )}
+
       {/* Subtle frost edge vignette */}
       <div
         className="absolute inset-0 pointer-events-none"
@@ -197,7 +215,11 @@ export const GameHUD: React.FC<GameHUDProps> = ({
       <div className="absolute top-0 left-0 right-0 flex items-start justify-between px-5 pt-4 gap-4">
         {/* Top-Left Objective Readout */}
         <div className="pointer-events-auto flex flex-col gap-1 bg-[#060913]/88 border border-white/12 rounded-lg px-4 py-2.5 shrink-0">
-          <div className="flex items-center gap-3 text-sm font-medium text-slate-100 whitespace-nowrap">
+          <div className="flex items-center gap-2.5 text-sm font-medium text-slate-100 whitespace-nowrap">
+            <span className="text-xs font-mono-tabular font-semibold text-red-300">Lv {hud.level}</span>
+            <span aria-hidden="true" className="text-slate-600">
+              ·
+            </span>
             <span className={hud.exitUnlocked ? 'text-emerald-400 font-semibold' : 'text-amber-300 font-semibold'}>
               {hud.exitUnlocked
                 ? 'Exit Gate Unlocked'
@@ -225,7 +247,11 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               : hud.exitUnlocked
                 ? `Follow EXIT marker (${Math.round(hud.exitDistance)}m)`
                 : hud.nearestOrnamentDistance !== null
-                  ? `Star ${Math.round(hud.nearestOrnamentDistance)}m · Exit ${Math.round(hud.exitDistance)}m · ${
+                  ? `Star ${Math.round(hud.nearestOrnamentDistance)}m · ${
+                      hud.nearestBatteryDistance !== null
+                        ? `Battery ${Math.round(hud.nearestBatteryDistance)}m · `
+                        : ''
+                    }${
                       hud.equippedWeapon
                         ? WEAPON_SPECS[hud.equippedWeapon].label
                         : `Drop ${Math.ceil(hud.nextWeaponSpawnIn)}s`
@@ -355,6 +381,14 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         </div>
       </div>
 
+      {/* Live Minimap & Expandable Tactical Maze Map */}
+      <MazeMap
+        mapState={hud.mapState}
+        expanded={mapExpanded}
+        onToggleExpanded={onToggleMapExpanded}
+        level={hud.level}
+      />
+
       {/* Transient Event Subtitle Banner */}
       {(hud.statusBanner || hud.chimeAngleDeg !== null) && (
         <div className="absolute top-28 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5 pointer-events-none max-w-md px-4 text-center">
@@ -364,8 +398,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             </div>
           )}
           {hud.chimeAngleDeg !== null && (
-            <div className="bg-[#060913]/85 border border-amber-400/35 rounded-lg px-3 py-1 text-xs font-medium text-amber-200 whitespace-nowrap">
-              Chime guide: {hud.chimeTargetLabel} ({describeDirection(hud.chimeAngleDeg)})
+            <div className="bg-[#060913]/92 border border-amber-400/45 rounded-lg px-3.5 py-1.5 text-xs font-medium text-amber-200 whitespace-nowrap">
+              Follow Golden Trail {describeDirection(hud.chimeAngleDeg)} → {hud.chimeTargetLabel}
+              {hud.chimeTargetDistance !== null ? ` (${Math.round(hud.chimeTargetDistance)}m)` : ''}
             </div>
           )}
         </div>
@@ -408,12 +443,12 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
               hud.flashlightOn
                 ? 'bg-amber-500/18 border-amber-400/45 text-amber-200'
-                : 'bg-slate-900/90 border-white/12 text-slate-300 hover:text-white'
+                : 'bg-slate-900/90 border-emerald-400/30 text-emerald-300 hover:text-white'
             }`}
           >
             <Flashlight className="w-3.5 h-3.5" />
-            <span>Light (F)</span>
-            <span className="font-mono-tabular text-slate-300">{Math.round(hud.battery)}%</span>
+            <span>{hud.flashlightOn ? 'Light (F)' : 'Charging (F)'}</span>
+            <span className="font-mono-tabular text-slate-200">{hud.battery.toFixed(1)}%</span>
           </button>
 
           <button
@@ -472,6 +507,19 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               </span>
             </div>
           )}
+
+          <button
+            type="button"
+            onClick={onToggleMapExpanded}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              mapExpanded
+                ? 'bg-emerald-500/20 border-emerald-400/50 text-emerald-200'
+                : 'bg-slate-900/90 border-white/15 text-slate-200 hover:bg-slate-800'
+            }`}
+          >
+            <MapIcon className="w-3.5 h-3.5" />
+            <span>Map (Tab)</span>
+          </button>
 
           {hud.isMultiplayer && (
             <button
