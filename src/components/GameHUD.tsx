@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronUp,
   Compass,
+  Crosshair,
   Flashlight,
   MessageSquare,
   Pause,
@@ -11,8 +12,9 @@ import {
   Users,
   Volume2,
   VolumeX,
+  Wind,
 } from 'lucide-react';
-import { HudSnapshot } from '../game/types';
+import { HudSnapshot, WEAPON_SPECS } from '../game/types';
 
 interface GameHUDProps {
   hud: HudSnapshot;
@@ -21,6 +23,8 @@ interface GameHUDProps {
   onPause: () => void;
   onToggleFlashlight: () => void;
   onTriggerChime: () => void;
+  onUseWeapon: () => void;
+  onDodge: () => void;
   onToggleHudHidden: () => void;
   onLockPointer: () => void;
   onToggleChat: () => void;
@@ -71,20 +75,26 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   onPause,
   onToggleFlashlight,
   onTriggerChime,
+  onUseWeapon,
+  onDodge,
   onToggleHudHidden,
   onLockPointer,
   onToggleChat,
 }) => {
   if (hud.phase !== 'playing') return null;
 
-  const terror = hud.spectating ? 0 : Math.max(0, Math.min(1, (20 - hud.santaDistance) / 17.5));
+  const isStunned = hud.santaStunRemaining > 0;
+  const terror =
+    hud.spectating || isStunned ? 0 : Math.max(0, Math.min(1, (20 - hud.santaDistance) / 17.5));
   const rad = (hud.santaAngleDeg * Math.PI) / 180;
   const frontWeight = Math.max(0, Math.cos(rad));
   const backWeight = Math.max(0, -Math.cos(rad));
   const rightWeight = Math.max(0, Math.sin(rad));
   const leftWeight = Math.max(0, -Math.sin(rad));
 
-  const threatPct = Math.max(0, Math.min(100, ((26 - hud.santaDistance) / 24) * 100));
+  const threatPct = isStunned
+    ? Math.max(0, Math.min(100, (hud.santaStunRemaining / 30) * 100))
+    : Math.max(0, Math.min(100, ((26 - hud.santaDistance) / 24) * 100));
   const santaDistRound = Math.round(hud.santaDistance);
   const santaDir = describeDirection(hud.santaAngleDeg);
 
@@ -96,6 +106,10 @@ export const GameHUD: React.FC<GameHUDProps> = ({
     threatLabel = 'Spectating surviving teammates';
     threatTextClass = 'text-sky-300 font-medium';
     threatBarClass = 'bg-sky-500';
+  } else if (isStunned) {
+    threatLabel = `Santa stunned · ${Math.ceil(hud.santaStunRemaining)}s`;
+    threatTextClass = 'text-sky-300 font-semibold';
+    threatBarClass = 'bg-sky-400';
   } else if (hud.santaDistance < 8.5 || (hud.santaAlerted && hud.santaDistance < 14)) {
     threatLabel = `Santa hunting (${santaDir} · ${santaDistRound}m)`;
     threatTextClass = 'text-red-400 font-semibold';
@@ -113,6 +127,10 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   const exitPct = angleToPercent(hud.exitAngleDeg);
   const ornamentPct =
     hud.nearestOrnamentAngleDeg !== null ? angleToPercent(hud.nearestOrnamentAngleDeg) : null;
+  const weaponPct =
+    !hud.equippedWeapon && hud.nearestWeaponAngleDeg !== null
+      ? angleToPercent(hud.nearestWeaponAngleDeg)
+      : null;
 
   return (
     <div className="fixed inset-0 z-10 pointer-events-none">
@@ -207,7 +225,11 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               : hud.exitUnlocked
                 ? `Follow EXIT marker (${Math.round(hud.exitDistance)}m)`
                 : hud.nearestOrnamentDistance !== null
-                  ? `Nearest star ${Math.round(hud.nearestOrnamentDistance)}m · Exit ${Math.round(hud.exitDistance)}m`
+                  ? `Star ${Math.round(hud.nearestOrnamentDistance)}m · Exit ${Math.round(hud.exitDistance)}m · ${
+                      hud.equippedWeapon
+                        ? WEAPON_SPECS[hud.equippedWeapon].label
+                        : `Drop ${Math.ceil(hud.nextWeaponSpawnIn)}s`
+                    }`
                   : `Exit ${Math.round(hud.exitDistance)}m`}
           </div>
         </div>
@@ -239,6 +261,16 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                 title="Nearest Ornament"
               >
                 <Star className="w-3 h-3 fill-amber-300" />
+              </div>
+            )}
+
+            {weaponPct !== null && (
+              <div
+                className="absolute bottom-1 -translate-x-1/2 flex items-center gap-0.5 text-sky-300"
+                style={{ left: `${weaponPct}%` }}
+                title="Nearest Stun Weapon"
+              >
+                <Crosshair className="w-3 h-3" />
               </div>
             )}
 
@@ -354,10 +386,10 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           <span>{hud.hudHidden ? 'Show Controls' : 'Hide Controls'}</span>
         </button>
 
-        <div className="pointer-events-auto flex flex-wrap sm:flex-nowrap items-center gap-3 sm:gap-4 px-4 sm:px-5 py-3 bg-[#060913]/90 border border-white/15 rounded-xl max-w-[94vw]">
-          <div className="flex items-center gap-2.5 min-w-[130px]">
+        <div className="pointer-events-auto flex flex-wrap sm:flex-nowrap items-center gap-2.5 sm:gap-3 px-4 sm:px-5 py-3 bg-[#060913]/90 border border-white/15 rounded-xl max-w-[96vw]">
+          <div className="flex items-center gap-2.5 min-w-[122px]">
             <span className="text-xs font-medium text-slate-300 whitespace-nowrap">Stamina</span>
-            <div className="w-24 h-2 bg-slate-800 rounded-sm overflow-hidden">
+            <div className="w-20 h-2 bg-slate-800 rounded-sm overflow-hidden">
               <div
                 className={`h-full transition-all duration-100 ${
                   hud.stamina < 25 ? 'bg-red-500' : 'bg-sky-400'
@@ -373,14 +405,14 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             type="button"
             onClick={onToggleFlashlight}
             disabled={!hud.alive}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
               hud.flashlightOn
                 ? 'bg-amber-500/18 border-amber-400/45 text-amber-200'
                 : 'bg-slate-900/90 border-white/12 text-slate-300 hover:text-white'
             }`}
           >
             <Flashlight className="w-3.5 h-3.5" />
-            <span>Flashlight (F)</span>
+            <span>Light (F)</span>
             <span className="font-mono-tabular text-slate-300">{Math.round(hud.battery)}%</span>
           </button>
 
@@ -388,7 +420,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             type="button"
             onClick={onTriggerChime}
             disabled={hud.chimeCooldown > 0 || !hud.alive}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
               hud.chimeCooldown > 0 || !hud.alive
                 ? 'bg-slate-900/60 border-white/10 text-slate-500 cursor-not-allowed'
                 : 'bg-slate-900/90 border-white/15 text-slate-200 hover:bg-slate-800 cursor-pointer'
@@ -398,15 +430,54 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             <span>
               {hud.chimeCooldown > 0
                 ? `Chime (${Math.ceil(hud.chimeCooldown)}s)`
-                : 'Chime Guide (C)'}
+                : 'Chime (C)'}
             </span>
           </button>
+
+          <button
+            type="button"
+            onClick={onDodge}
+            disabled={hud.dodgeCooldown > 0 || !hud.alive || hud.spectating}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+              hud.dodgeCooldown > 0 || !hud.alive || hud.spectating
+                ? 'bg-slate-900/60 border-white/10 text-slate-500 cursor-not-allowed'
+                : 'bg-slate-900/90 border-white/15 text-slate-200 hover:bg-slate-800 cursor-pointer'
+            }`}
+          >
+            <Wind className="w-3.5 h-3.5" />
+            <span>
+              {hud.dodgeCooldown > 0
+                ? `Dodge (${hud.dodgeCooldown.toFixed(1)}s)`
+                : 'Dodge (Space)'}
+            </span>
+          </button>
+
+          {hud.equippedWeapon ? (
+            <button
+              type="button"
+              onClick={onUseWeapon}
+              disabled={!hud.alive || hud.spectating}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border bg-sky-500/20 border-sky-400/55 text-sky-200 hover:bg-sky-500/30 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Crosshair className="w-3.5 h-3.5" />
+              <span>{WEAPON_SPECS[hud.equippedWeapon].label} (Click/G)</span>
+            </button>
+          ) : (
+            <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border bg-slate-900/60 border-white/10 text-xs text-slate-400 whitespace-nowrap shrink-0">
+              <Crosshair className="w-3.5 h-3.5 text-sky-400/80" />
+              <span>
+                {hud.nearestWeaponDistance !== null
+                  ? `Weapon ${Math.round(hud.nearestWeaponDistance)}m`
+                  : `Drop ${Math.ceil(hud.nextWeaponSpawnIn)}s`}
+              </span>
+            </div>
+          )}
 
           {hud.isMultiplayer && (
             <button
               type="button"
               onClick={onToggleChat}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 hud.chatOpen
                   ? 'bg-sky-500/20 border-sky-400/50 text-sky-200'
                   : 'bg-slate-900/90 border-white/15 text-slate-200 hover:bg-slate-800'
@@ -416,16 +487,6 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               <span>Chat (T)</span>
             </button>
           )}
-
-          <div className="hidden lg:block w-px h-5 bg-white/12" aria-hidden="true" />
-
-          <div className="hidden lg:flex items-center gap-2 text-xs text-slate-400 whitespace-nowrap">
-            <span>WASD Move</span>
-            <span aria-hidden="true">·</span>
-            <span>Drag / Q-E Look</span>
-            <span aria-hidden="true">·</span>
-            <span>Shift Sprint</span>
-          </div>
         </div>
       </div>
     </div>

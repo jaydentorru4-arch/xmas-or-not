@@ -211,7 +211,8 @@ export const MenuOverlays: React.FC<MenuOverlaysProps> = ({
               </h1>
               <p className="text-sm text-slate-300 leading-relaxed mb-6">
                 Trapped inside a 27×27 frostbitten North Pole hedge maze at midnight, recover cursed
-                star ornaments to unseal the exit gate before Evil Santa hunts you down.
+                star ornaments to unseal the exit gate, dodge around corners to lose Evil Santa, and
+                grab 60s weapon drops to knock him out for 30 seconds.
               </p>
 
               {/* Difficulty Selector */}
@@ -257,6 +258,10 @@ export const MenuOverlays: React.FC<MenuOverlaysProps> = ({
               <span>Mouse / Q-E Look</span>
               <span aria-hidden="true">·</span>
               <span>Shift Sprint</span>
+              <span aria-hidden="true">·</span>
+              <span>Space Dodge</span>
+              <span aria-hidden="true">·</span>
+              <span>Click/G Weapon</span>
               <span aria-hidden="true">·</span>
               <span>F Light</span>
               <span aria-hidden="true">·</span>

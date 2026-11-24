@@ -141,6 +141,12 @@
         "collectedOrnaments": {
           "type": "array"
         },
+        "collectedWeapons": {
+          "type": "array"
+        },
+        "santaStunNonce": {
+          "type": "number"
+        },
         "ornamentsTotal": {
           "type": "number"
         },
@@ -171,6 +177,8 @@
         "mazeSeed",
         "status",
         "collectedOrnaments",
+        "collectedWeapons",
+        "santaStunNonce",
         "ornamentsTotal",
         "exitUnlocked",
         "isPublic",
@@ -244,7 +252,7 @@
     },
     "SantaLiveState": {
       "title": "SantaLiveState",
-      "description": "Host-authoritative Evil Santa position and alert state for a room.",
+      "description": "Host-authoritative Evil Santa position, alert, and stun state for a room.",
       "type": "object",
       "properties": {
         "x": {
@@ -262,12 +270,15 @@
         "alerted": {
           "type": "boolean"
         },
+        "stunRemaining": {
+          "type": "number"
+        },
         "updatedAt": {
           "type": "string",
           "format": "date-time"
         }
       },
-      "required": ["x", "z", "yaw", "speed", "alerted", "updatedAt"]
+      "required": ["x", "z", "yaw", "speed", "alerted", "stunRemaining", "updatedAt"]
     },
     "RoomChatMessage": {
       "title": "RoomChatMessage",

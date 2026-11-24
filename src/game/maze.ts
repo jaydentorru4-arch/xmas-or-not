@@ -4,7 +4,7 @@ export const MAZE_SIZE = 27; // Larger 27x27 labyrinth (108m x 108m)
 export const CELL_SIZE = 4.0;
 export const WALL_HEIGHT = 3.8;
 
-function createRng(seed: number): () => number {
+export function createRng(seed: number): () => number {
   let state = seed >>> 0;
   return () => {
     state = (state + 0x6d2b79f5) >>> 0;

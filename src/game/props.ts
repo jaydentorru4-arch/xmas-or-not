@@ -248,3 +248,199 @@ export function createExitGate(
     gateLight,
   };
 }
+
+export interface WeaponProp {
+  id: number;
+  type: 'tranq_dart' | 'cryo_blaster' | 'candy_bat';
+  r: number;
+  c: number;
+  collected: boolean;
+  group: THREE.Group;
+  weaponMeshGroup: THREE.Group;
+  light: THREE.PointLight;
+}
+
+export function buildWeaponCompositeMesh(
+  type: 'tranq_dart' | 'cryo_blaster' | 'candy_bat',
+  candyCaneTex: THREE.Texture,
+  disposables: { dispose: () => void }[]
+): THREE.Group {
+  const track = <T extends { dispose: () => void }>(item: T): T => {
+    disposables.push(item);
+    return item;
+  };
+
+  const g = new THREE.Group();
+
+  const walnutMat = track(
+    new THREE.MeshStandardMaterial({ color: 0x4b2a16, roughness: 0.78, metalness: 0.06 })
+  );
+  const darkSteelMat = track(
+    new THREE.MeshStandardMaterial({ color: 0x262d38, roughness: 0.34, metalness: 0.86 })
+  );
+  const brassMat = track(
+    new THREE.MeshStandardMaterial({ color: 0xd4a438, roughness: 0.24, metalness: 0.9 })
+  );
+  const cryoGlowMat = track(
+    new THREE.MeshStandardMaterial({
+      color: 0x38bdf8,
+      emissive: 0x0ea5e9,
+      emissiveIntensity: 2.2,
+      roughness: 0.2,
+    })
+  );
+  const candyMat = track(
+    new THREE.MeshStandardMaterial({ map: candyCaneTex, roughness: 0.42, metalness: 0.12 })
+  );
+
+  if (type === 'tranq_dart') {
+    const barrel = new THREE.Mesh(track(new THREE.CylinderGeometry(0.028, 0.032, 0.44, 10)), darkSteelMat);
+    barrel.rotation.x = Math.PI / 2;
+    barrel.position.set(0, 0.04, -0.06);
+    g.add(barrel);
+
+    const grip = new THREE.Mesh(track(new THREE.BoxGeometry(0.055, 0.16, 0.085)), walnutMat);
+    grip.position.set(0, -0.06, 0.12);
+    grip.rotation.x = 0.28;
+    g.add(grip);
+
+    const vial = new THREE.Mesh(track(new THREE.CylinderGeometry(0.024, 0.024, 0.16, 8)), cryoGlowMat);
+    vial.rotation.x = Math.PI / 2;
+    vial.position.set(0, 0.085, -0.02);
+    g.add(vial);
+
+    const sight = new THREE.Mesh(track(new THREE.TorusGeometry(0.025, 0.007, 6, 12)), brassMat);
+    sight.position.set(0, 0.09, -0.24);
+    g.add(sight);
+
+    const needle = new THREE.Mesh(track(new THREE.ConeGeometry(0.015, 0.1, 8)), cryoGlowMat);
+    needle.rotation.x = -Math.PI / 2;
+    needle.position.set(0, 0.04, -0.32);
+    g.add(needle);
+  } else if (type === 'cryo_blaster') {
+    const stock = new THREE.Mesh(track(new THREE.BoxGeometry(0.075, 0.12, 0.34)), walnutMat);
+    stock.position.set(0, -0.03, 0.16);
+    stock.rotation.x = 0.12;
+    g.add(stock);
+
+    const mainTube = new THREE.Mesh(track(new THREE.CylinderGeometry(0.045, 0.04, 0.48, 12)), darkSteelMat);
+    mainTube.rotation.x = Math.PI / 2;
+    mainTube.position.set(0, 0.04, -0.08);
+    g.add(mainTube);
+
+    const bellMuzzle = new THREE.Mesh(track(new THREE.CylinderGeometry(0.072, 0.045, 0.14, 12)), brassMat);
+    bellMuzzle.rotation.x = Math.PI / 2;
+    bellMuzzle.position.set(0, 0.04, -0.36);
+    g.add(bellMuzzle);
+
+    const tank = new THREE.Mesh(track(new THREE.CylinderGeometry(0.038, 0.038, 0.22, 10)), cryoGlowMat);
+    tank.rotation.x = Math.PI / 2;
+    tank.position.set(0, -0.015, -0.1);
+    g.add(tank);
+
+    const ring = new THREE.Mesh(track(new THREE.TorusGeometry(0.052, 0.012, 6, 14)), brassMat);
+    ring.position.set(0, 0.04, -0.22);
+    g.add(ring);
+  } else {
+    // Heavy Candy Bat (Granny melee stun weapon)
+    const shaft = new THREE.Mesh(track(new THREE.CylinderGeometry(0.058, 0.026, 0.78, 12)), candyMat);
+    shaft.rotation.x = -0.35;
+    shaft.position.set(0, 0.06, -0.1);
+    g.add(shaft);
+
+    const bandTop = new THREE.Mesh(track(new THREE.TorusGeometry(0.056, 0.013, 8, 14)), brassMat);
+    bandTop.rotation.x = Math.PI / 2 - 0.35;
+    bandTop.position.set(0, 0.25, -0.17);
+    g.add(bandTop);
+
+    const frostCore = new THREE.Mesh(track(new THREE.SphereGeometry(0.065, 10, 10)), cryoGlowMat);
+    frostCore.position.set(0, 0.42, -0.24);
+    g.add(frostCore);
+
+    const pommel = new THREE.Mesh(track(new THREE.CylinderGeometry(0.036, 0.036, 0.05, 10)), darkSteelMat);
+    pommel.rotation.x = -0.35;
+    pommel.position.set(0, -0.3, 0.04);
+    g.add(pommel);
+  }
+
+  return g;
+}
+
+export function createWeaponProp(
+  id: number,
+  type: 'tranq_dart' | 'cryo_blaster' | 'candy_bat',
+  r: number,
+  c: number,
+  worldX: number,
+  worldZ: number,
+  contactShadowTex: THREE.Texture,
+  candyCaneTex: THREE.Texture,
+  disposables: { dispose: () => void }[]
+): WeaponProp {
+  const track = <T extends { dispose: () => void }>(item: T): T => {
+    disposables.push(item);
+    return item;
+  };
+
+  const group = new THREE.Group();
+  group.position.set(worldX, 0, worldZ);
+
+  const shadow = new THREE.Mesh(
+    track(new THREE.PlaneGeometry(1.1, 1.1)),
+    track(
+      new THREE.MeshBasicMaterial({
+        map: contactShadowTex,
+        transparent: true,
+        depthWrite: false,
+        opacity: 0.65,
+      })
+    )
+  );
+  shadow.rotation.x = -Math.PI / 2;
+  shadow.position.y = 0.015;
+  group.add(shadow);
+
+  // Frost steel supply crate (bottom at y = 0)
+  const crateMat = track(
+    new THREE.MeshStandardMaterial({ color: 0x162436, roughness: 0.65, metalness: 0.35 })
+  );
+  const trimMat = track(
+    new THREE.MeshStandardMaterial({
+      color: 0x38bdf8,
+      emissive: 0x0284c7,
+      emissiveIntensity: 1.5,
+      roughness: 0.25,
+      metalness: 0.6,
+    })
+  );
+  const crate = new THREE.Mesh(track(new THREE.BoxGeometry(0.72, 0.48, 0.72)), crateMat);
+  crate.position.y = 0.24;
+  crate.castShadow = true;
+  crate.receiveShadow = true;
+  group.add(crate);
+
+  const rim = new THREE.Mesh(track(new THREE.BoxGeometry(0.76, 0.06, 0.76)), trimMat);
+  rim.position.y = 0.48;
+  group.add(rim);
+
+  const weaponMeshGroup = buildWeaponCompositeMesh(type, candyCaneTex, disposables);
+  weaponMeshGroup.position.set(0, 1.05, 0);
+  weaponMeshGroup.scale.setScalar(1.35);
+  group.add(weaponMeshGroup);
+
+  const light = new THREE.PointLight(0x38bdf8, 2.5, 9.5, 1.7);
+  light.position.y = 1.25;
+  group.add(light);
+
+  return {
+    id,
+    type,
+    r,
+    c,
+    collected: false,
+    group,
+    weaponMeshGroup,
+    light,
+  };
+}
+

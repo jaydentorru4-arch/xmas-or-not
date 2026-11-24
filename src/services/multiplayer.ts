@@ -249,6 +249,8 @@ export function subscribePublicRooms(
             mazeSeed: Number(d.mazeSeed || 1),
             status: (d.status as GameRoomData['status']) || 'waiting',
             collectedOrnaments: Array.isArray(d.collectedOrnaments) ? d.collectedOrnaments.map(Number) : [],
+            collectedWeapons: Array.isArray(d.collectedWeapons) ? d.collectedWeapons.map(Number) : [],
+            santaStunNonce: Number(d.santaStunNonce || 0),
             ornamentsTotal: Number(d.ornamentsTotal || 6),
             exitUnlocked: Boolean(d.exitUnlocked),
             isPublic: Boolean(d.isPublic),
@@ -277,6 +279,9 @@ export async function createMultiplayerRoom(
   const ornamentsTotal = DIFFICULTIES[difficulty].ornamentCount;
 
   const roomPath = `rooms/${roomId}`;
+  const playerPath = `rooms/${roomId}/players/${profile.uid}`;
+  const santaPath = `rooms/${roomId}/santa/live`;
+
   try {
     await setDoc(doc(db, 'rooms', roomId), {
       roomId,
@@ -287,6 +292,8 @@ export async function createMultiplayerRoom(
       mazeSeed,
       status: 'waiting',
       collectedOrnaments: [],
+      collectedWeapons: [],
+      santaStunNonce: 0,
       ornamentsTotal,
       exitUnlocked: false,
       isPublic,
@@ -294,7 +301,11 @@ export async function createMultiplayerRoom(
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, roomPath);
+  }
 
+  try {
     await setDoc(doc(db, 'rooms', roomId, 'players', profile.uid), {
       uid: profile.uid,
       roomId,
@@ -308,33 +319,40 @@ export async function createMultiplayerRoom(
       escaped: false,
       updatedAt: serverTimestamp(),
     });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, playerPath);
+  }
 
+  try {
     await setDoc(doc(db, 'rooms', roomId, 'santa', 'live'), {
       x: 0,
       z: 0,
       yaw: 0,
       speed: 0,
       alerted: false,
+      stunRemaining: 0,
       updatedAt: serverTimestamp(),
     });
-
-    return {
-      roomId,
-      name: finalName,
-      hostId: profile.uid,
-      hostName: sanitizeDisplayName(profile.displayName),
-      difficulty,
-      mazeSeed,
-      status: 'waiting',
-      collectedOrnaments: [],
-      ornamentsTotal,
-      exitUnlocked: false,
-      isPublic,
-      playerCount: 1,
-    };
   } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, roomPath);
+    handleFirestoreError(error, OperationType.CREATE, santaPath);
   }
+
+  return {
+    roomId,
+    name: finalName,
+    hostId: profile.uid,
+    hostName: sanitizeDisplayName(profile.displayName),
+    difficulty,
+    mazeSeed,
+    status: 'waiting',
+    collectedOrnaments: [],
+    collectedWeapons: [],
+    santaStunNonce: 0,
+    ornamentsTotal,
+    exitUnlocked: false,
+    isPublic,
+    playerCount: 1,
+  };
 }
 
 export async function joinMultiplayerRoom(
@@ -390,6 +408,8 @@ export async function joinMultiplayerRoom(
       mazeSeed: Number(d.mazeSeed || 1),
       status: (d.status as GameRoomData['status']) || 'waiting',
       collectedOrnaments: Array.isArray(d.collectedOrnaments) ? d.collectedOrnaments.map(Number) : [],
+      collectedWeapons: Array.isArray(d.collectedWeapons) ? d.collectedWeapons.map(Number) : [],
+      santaStunNonce: Number(d.santaStunNonce || 0),
       ornamentsTotal: Number(d.ornamentsTotal || 6),
       exitUnlocked: Boolean(d.exitUnlocked),
       isPublic: Boolean(d.isPublic),
@@ -476,6 +496,44 @@ export async function collectRoomOrnament(
   }
 }
 
+export async function collectRoomWeapon(roomId: string, weaponId: number): Promise<void> {
+  const path = `rooms/${roomId}`;
+  try {
+    const roomRef = doc(db, 'rooms', roomId);
+    const snap = await getDoc(roomRef);
+    if (!snap.exists()) return;
+    const d = snap.data();
+    if (d.status === 'finished') return;
+    const current: number[] = Array.isArray(d.collectedWeapons) ? d.collectedWeapons.map(Number) : [];
+    if (current.includes(weaponId)) return;
+    const next = [...current, weaponId].slice(-40);
+    await updateDoc(roomRef, {
+      collectedWeapons: next,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function triggerRoomSantaStun(roomId: string): Promise<void> {
+  const path = `rooms/${roomId}`;
+  try {
+    const roomRef = doc(db, 'rooms', roomId);
+    const snap = await getDoc(roomRef);
+    if (!snap.exists()) return;
+    const d = snap.data();
+    if (d.status === 'finished') return;
+    const nextNonce = Math.min(10000, Number(d.santaStunNonce || 0) + 1);
+    await updateDoc(roomRef, {
+      santaStunNonce: nextNonce,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
 export async function syncLocalPlayerState(
   roomId: string,
   profile: SurvivorProfile,
@@ -517,6 +575,7 @@ export async function syncHostSantaState(
       yaw: Number(state.yaw.toFixed(3)),
       speed: Number(Math.max(0, Math.min(20, state.speed)).toFixed(2)),
       alerted: state.alerted,
+      stunRemaining: Number(Math.max(0, Math.min(35, state.stunRemaining)).toFixed(1)),
       updatedAt: serverTimestamp(),
     });
   } catch {
@@ -546,6 +605,8 @@ export function subscribeRoom(
         mazeSeed: Number(d.mazeSeed || 1),
         status: (d.status as GameRoomData['status']) || 'waiting',
         collectedOrnaments: Array.isArray(d.collectedOrnaments) ? d.collectedOrnaments.map(Number) : [],
+        collectedWeapons: Array.isArray(d.collectedWeapons) ? d.collectedWeapons.map(Number) : [],
+        santaStunNonce: Number(d.santaStunNonce || 0),
         ornamentsTotal: Number(d.ornamentsTotal || 6),
         exitUnlocked: Boolean(d.exitUnlocked),
         isPublic: Boolean(d.isPublic),
@@ -602,6 +663,7 @@ export function subscribeRoomSanta(
         yaw: Number(d.yaw || 0),
         speed: Number(d.speed || 0),
         alerted: Boolean(d.alerted),
+        stunRemaining: Number(d.stunRemaining || 0),
       });
     },
     (error) => handleFirestoreError(error, OperationType.GET, path)

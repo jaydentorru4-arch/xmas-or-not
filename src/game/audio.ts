@@ -87,7 +87,14 @@ export class HorrorAudio {
     return this.muted;
   }
 
-  public updateAmbience(nowSec: number, santaDist: number, santaAlerted: boolean, playerMoving: boolean, sprinting: boolean): void {
+  public updateAmbience(
+    nowSec: number,
+    santaDist: number,
+    santaAlerted: boolean,
+    playerMoving: boolean,
+    sprinting: boolean,
+    santaStunned = false
+  ): void {
     if (!this.ctx || !this.masterGain || this.muted) return;
     if (this.ctx.state === 'suspended') return;
 
@@ -99,6 +106,8 @@ export class HorrorAudio {
         this.playSnowStep(sprinting ? 0.12 : 0.07);
       }
     }
+
+    if (santaStunned) return;
 
     // 2. Heartbeat scaling with Santa proximity (< 20m)
     if (santaDist < 20) {
@@ -359,6 +368,88 @@ export class HorrorAudio {
       osc.start(start);
       osc.stop(start + 0.95);
     });
+  }
+
+  public playWeaponPickup(): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const t = this.ctx.currentTime;
+    [523.25, 783.99].forEach((freq, idx) => {
+      if (!this.ctx || !this.masterGain) return;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.value = freq;
+      const s = t + idx * 0.06;
+      gain.gain.setValueAtTime(0.001, s);
+      gain.gain.exponentialRampToValueAtTime(0.18, s + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.001, s + 0.22);
+      osc.connect(gain);
+      gain.connect(this.masterGain);
+      osc.start(s);
+      osc.stop(s + 0.25);
+    });
+  }
+
+  public playWeaponFire(kind: 'tranq_dart' | 'cryo_blaster' | 'candy_bat'): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+
+    if (kind === 'tranq_dart') {
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(920, t);
+      osc.frequency.exponentialRampToValueAtTime(220, t + 0.14);
+      gain.gain.setValueAtTime(0.22, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+    } else if (kind === 'cryo_blaster') {
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(280, t);
+      osc.frequency.exponentialRampToValueAtTime(55, t + 0.28);
+      gain.gain.setValueAtTime(0.26, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+    } else {
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(340, t);
+      osc.frequency.exponentialRampToValueAtTime(90, t + 0.15);
+      gain.gain.setValueAtTime(0.24, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+    }
+
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(t);
+    osc.stop(t + 0.32);
+  }
+
+  public playSantaStunned(): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const t = this.ctx.currentTime;
+    // Heavy knockout thud + descending Santa groan
+    [130, 96, 62].forEach((freq, idx) => {
+      if (!this.ctx || !this.masterGain) return;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'sawtooth';
+      const s = t + idx * 0.08;
+      osc.frequency.setValueAtTime(freq, s);
+      osc.frequency.exponentialRampToValueAtTime(freq * 0.42, s + 0.45);
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = 380;
+      gain.gain.setValueAtTime(0.24, s);
+      gain.gain.exponentialRampToValueAtTime(0.001, s + 0.5);
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.masterGain);
+      osc.start(s);
+      osc.stop(s + 0.55);
+    });
+  }
+
+  public playDodgeStep(): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    this.playSnowStep(0.18);
   }
 
   public dispose(): void {

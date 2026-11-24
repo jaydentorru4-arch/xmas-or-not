@@ -91,13 +91,13 @@ service cloud.firestore {
     function isValidRoom(data) {
       return data.keys().hasAll([
           'roomId', 'name', 'hostId', 'hostName', 'difficulty', 'mazeSeed',
-          'status', 'collectedOrnaments', 'ornamentsTotal', 'exitUnlocked',
-          'isPublic', 'playerCount', 'createdAt', 'updatedAt'
+          'status', 'collectedOrnaments', 'collectedWeapons', 'santaStunNonce',
+          'ornamentsTotal', 'exitUnlocked', 'isPublic', 'playerCount', 'createdAt', 'updatedAt'
         ])
         && data.keys().hasOnly([
           'roomId', 'name', 'hostId', 'hostName', 'difficulty', 'mazeSeed',
-          'status', 'collectedOrnaments', 'ornamentsTotal', 'exitUnlocked',
-          'isPublic', 'playerCount', 'createdAt', 'updatedAt'
+          'status', 'collectedOrnaments', 'collectedWeapons', 'santaStunNonce',
+          'ornamentsTotal', 'exitUnlocked', 'isPublic', 'playerCount', 'createdAt', 'updatedAt'
         ])
         && isValidId(data.roomId)
         && data.roomId.size() >= 4
@@ -115,6 +115,12 @@ service cloud.firestore {
         && data.collectedOrnaments is list
         && data.collectedOrnaments.size() <= 10
         && (data.collectedOrnaments.size() == 0 || data.collectedOrnaments[0] is number)
+        && data.collectedWeapons is list
+        && data.collectedWeapons.size() <= 40
+        && (data.collectedWeapons.size() == 0 || data.collectedWeapons[0] is number)
+        && data.santaStunNonce is number
+        && data.santaStunNonce >= 0
+        && data.santaStunNonce <= 10000
         && data.ornamentsTotal is number
         && data.ornamentsTotal >= 1
         && data.ornamentsTotal <= 10
@@ -157,8 +163,8 @@ service cloud.firestore {
     }
 
     function isValidSantaState(data) {
-      return data.keys().hasAll(['x', 'z', 'yaw', 'speed', 'alerted', 'updatedAt'])
-        && data.keys().hasOnly(['x', 'z', 'yaw', 'speed', 'alerted', 'updatedAt'])
+      return data.keys().hasAll(['x', 'z', 'yaw', 'speed', 'alerted', 'stunRemaining', 'updatedAt'])
+        && data.keys().hasOnly(['x', 'z', 'yaw', 'speed', 'alerted', 'stunRemaining', 'updatedAt'])
         && data.x is number
         && data.x >= -200 && data.x <= 200
         && data.z is number
@@ -167,6 +173,8 @@ service cloud.firestore {
         && data.speed is number
         && data.speed >= 0 && data.speed <= 20
         && data.alerted is bool
+        && data.stunRemaining is number
+        && data.stunRemaining >= 0 && data.stunRemaining <= 35
         && data.updatedAt is timestamp;
     }
 
@@ -264,13 +272,13 @@ service cloud.firestore {
           // Action 1: Host controls match lifecycle
           (
             existing().hostId == request.auth.uid
-            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'playerCount', 'collectedOrnaments', 'exitUnlocked', 'updatedAt'])
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'playerCount', 'collectedOrnaments', 'collectedWeapons', 'santaStunNonce', 'exitUnlocked', 'updatedAt'])
           )
           ||
-          // Action 2: Joined survivor collects ornaments or updates headcount
+          // Action 2: Joined survivor collects ornaments, weapons, triggers stun, or updates headcount
           (
             exists(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid))
-            && incoming().diff(existing()).affectedKeys().hasOnly(['playerCount', 'collectedOrnaments', 'exitUnlocked', 'updatedAt'])
+            && incoming().diff(existing()).affectedKeys().hasOnly(['playerCount', 'collectedOrnaments', 'collectedWeapons', 'santaStunNonce', 'exitUnlocked', 'updatedAt'])
           )
         );
       allow delete: if isVerifiedUser() && isValidId(roomId) && existing().hostId == request.auth.uid;
@@ -318,7 +326,7 @@ service cloud.firestore {
           && isValidId(roomId)
           && isValidSantaState(incoming())
           && incoming().updatedAt == request.time
-          && incoming().diff(existing()).affectedKeys().hasOnly(['x', 'z', 'yaw', 'speed', 'alerted', 'updatedAt'])
+          && incoming().diff(existing()).affectedKeys().hasOnly(['x', 'z', 'yaw', 'speed', 'alerted', 'stunRemaining', 'updatedAt'])
           && get(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == request.auth.uid;
         allow delete: if false;
       }

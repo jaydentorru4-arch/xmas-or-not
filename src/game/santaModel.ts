@@ -11,7 +11,8 @@ export interface EvilSantaRig {
   auraLight: THREE.PointLight;
   eyeLeft: THREE.Mesh;
   eyeRight: THREE.Mesh;
-  updateAnimation: (time: number, speed: number, alerted: boolean) => void;
+  stunStarsGroup: THREE.Group;
+  updateAnimation: (time: number, speed: number, alerted: boolean, stunRemaining?: number) => void;
   dispose: () => void;
 }
 
@@ -82,6 +83,14 @@ export function createEvilSanta(
       metalness: 0.82,
     })
   );
+  const stunStarMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      color: 0x38bdf8,
+      emissive: 0x38bdf8,
+      emissiveIntensity: 2.2,
+      roughness: 0.2,
+    })
+  );
 
   // Grounded contact shadow disc at y = 0.015
   const shadowMat = trackMat(
@@ -97,7 +106,7 @@ export function createEvilSanta(
   shadowPlane.position.y = 0.015;
   root.add(shadowPlane);
 
-  // Body pivot for limping/breathing sway
+  // Body pivot for limping/breathing/knockout slump
   const bodyPivot = new THREE.Group();
   root.add(bodyPivot);
 
@@ -139,7 +148,6 @@ export function createEvilSanta(
   chest.castShadow = true;
   bodyPivot.add(chest);
 
-  // Blackened belt & tarnished brass buckle
   const belt = new THREE.Mesh(trackGeo(new THREE.CylinderGeometry(0.39, 0.39, 0.14, 14)), darkLeatherMat);
   belt.position.y = 1.44;
   belt.scale.set(1.1, 1, 0.9);
@@ -149,7 +157,6 @@ export function createEvilSanta(
   buckle.position.set(0, 1.44, 0.36);
   bodyPivot.add(buckle);
 
-  // Fur collar mantle
   const collar = new THREE.Mesh(trackGeo(new THREE.TorusGeometry(0.36, 0.1, 8, 14)), furTrimMat);
   collar.rotation.x = Math.PI / 2;
   collar.position.y = 2.08;
@@ -165,13 +172,11 @@ export function createEvilSanta(
   cranium.castShadow = true;
   headGroup.add(cranium);
 
-  // Sunken brow ridge
   const brow = new THREE.Mesh(trackGeo(new THREE.BoxGeometry(0.34, 0.08, 0.16)), paleSkinMat);
   brow.position.set(0, 0.06, 0.19);
   brow.rotation.x = 0.25;
   headGroup.add(brow);
 
-  // Glowing crimson eyes
   const eyeGeo = trackGeo(new THREE.SphereGeometry(0.038, 8, 8));
   const eyeLeft = new THREE.Mesh(eyeGeo, eyeGlowMat);
   eyeLeft.position.set(-0.085, 0.03, 0.225);
@@ -179,7 +184,6 @@ export function createEvilSanta(
   eyeRight.position.set(0.085, 0.03, 0.225);
   headGroup.add(eyeLeft, eyeRight);
 
-  // Jagged matted beard
   const beardMain = new THREE.Mesh(trackGeo(new THREE.ConeGeometry(0.23, 0.48, 7)), furTrimMat);
   beardMain.rotation.x = Math.PI;
   beardMain.position.set(0, -0.22, 0.15);
@@ -193,7 +197,6 @@ export function createEvilSanta(
   mustacheR.position.set(0.09, -0.05, 0.24);
   headGroup.add(mustacheL, mustacheR);
 
-  // Crooked drooping Santa hat
   const hatBand = new THREE.Mesh(trackGeo(new THREE.TorusGeometry(0.24, 0.065, 8, 14)), furTrimMat);
   hatBand.rotation.x = Math.PI / 2;
   hatBand.position.set(0, 0.16, 0);
@@ -208,6 +211,19 @@ export function createEvilSanta(
   const hatBell = new THREE.Mesh(trackGeo(new THREE.SphereGeometry(0.06, 8, 8)), tarnishedBrassMat);
   hatBell.position.set(0.17, 0.54, -0.14);
   headGroup.add(hatBell);
+
+  // Orbiting dizzy stars when stunned (Granny-style knockout)
+  const stunStarsGroup = new THREE.Group();
+  stunStarsGroup.position.set(0, 0.65, 0);
+  stunStarsGroup.visible = false;
+  const dizzyGeo = trackGeo(new THREE.OctahedronGeometry(0.075, 0));
+  for (let i = 0; i < 3; i++) {
+    const a = (i * Math.PI * 2) / 3;
+    const star = new THREE.Mesh(dizzyGeo, stunStarMat);
+    star.position.set(Math.cos(a) * 0.42, 0, Math.sin(a) * 0.42);
+    stunStarsGroup.add(star);
+  }
+  headGroup.add(stunStarsGroup);
 
   // 4. Articulated Arms + Rusted Candy-Cane Hook Staff
   const makeArm = (side: -1 | 1): THREE.Group => {
@@ -234,7 +250,6 @@ export function createEvilSanta(
   const rightArm = makeArm(1);
   bodyPivot.add(leftArm, rightArm);
 
-  // Curved Iron Candy-Cane Hook in Right Hand
   const hookCurve = new THREE.CatmullRomCurve3([
     new THREE.Vector3(0, -0.72, 0.75),
     new THREE.Vector3(0, -0.72, 0.0),
@@ -247,26 +262,47 @@ export function createEvilSanta(
   hookStaff.castShadow = true;
   rightArm.add(hookStaff);
 
-  // Eerie crimson face/chest aura light so you see his red silhouette bleeding around corners
   const auraLight = new THREE.PointLight(0xff1e00, 3.2, 13.5, 1.5);
   auraLight.position.set(0, 1.95, 0.45);
   bodyPivot.add(auraLight);
 
-  const updateAnimation = (time: number, speed: number, alerted: boolean) => {
-    const strideFreq = alerted ? 9.5 : 5.4;
+  const updateAnimation = (time: number, speed: number, alerted: boolean, stunRemaining = 0) => {
+    if (stunRemaining > 0) {
+      // Granny-style knocked-out slump pose with dizzy orbiting stars
+      stunStarsGroup.visible = true;
+      stunStarsGroup.rotation.y = time * 3.6;
+
+      bodyPivot.position.y = -0.82;
+      bodyPivot.rotation.x = 0.92;
+      bodyPivot.rotation.z = 0.14;
+      leftLeg.rotation.x = -0.75;
+      rightLeg.rotation.x = -0.45;
+      leftArm.rotation.x = -0.55;
+      rightArm.rotation.x = -0.35;
+      headGroup.rotation.x = 0.42 + Math.sin(time * 2.2) * 0.08;
+      headGroup.rotation.z = Math.sin(time * 1.9) * 0.22;
+
+      const wakingSoon = stunRemaining < 4.0;
+      auraLight.intensity = wakingSoon && Math.sin(time * 16) > 0 ? 1.8 : 0.15;
+      eyeGlowMat.emissiveIntensity = wakingSoon && Math.sin(time * 16) > 0 ? 2.4 : 0.15;
+      return;
+    }
+
+    stunStarsGroup.visible = false;
+    bodyPivot.rotation.x = 0;
+
+    const strideFreq = alerted ? 8.2 : 4.8;
     const isMoving = speed > 0.1;
     const phase = time * strideFreq;
 
     if (isMoving) {
-      const swing = alerted ? 0.62 : 0.36;
+      const swing = alerted ? 0.56 : 0.34;
       leftLeg.rotation.x = Math.sin(phase) * swing;
       rightLeg.rotation.x = -Math.sin(phase) * swing;
 
-      // Left arm claws forward when hunting
       leftArm.rotation.x = alerted ? -1.15 + Math.sin(phase) * 0.22 : -Math.sin(phase) * 0.35;
       rightArm.rotation.x = alerted ? -0.48 + Math.cos(phase) * 0.25 : Math.sin(phase) * 0.25;
 
-      // Heavy limping lurch
       bodyPivot.position.y = Math.abs(Math.sin(phase)) * (alerted ? 0.11 : 0.05);
       bodyPivot.rotation.z = Math.sin(phase) * (alerted ? 0.08 : 0.04);
       headGroup.rotation.z = Math.sin(phase * 0.5) * 0.12;
@@ -281,7 +317,6 @@ export function createEvilSanta(
       headGroup.rotation.z = Math.sin(time * 1.1) * 0.08;
     }
 
-    // Flicker eyes & aura intensely when alerted
     const pulse = alerted
       ? 4.6 + Math.sin(time * 18) * 1.1 + Math.cos(time * 7) * 0.6
       : 2.8 + Math.sin(time * 4) * 0.4;
@@ -304,6 +339,7 @@ export function createEvilSanta(
     auraLight,
     eyeLeft,
     eyeRight,
+    stunStarsGroup,
     updateAnimation,
     dispose,
   };

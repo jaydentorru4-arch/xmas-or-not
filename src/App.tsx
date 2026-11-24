@@ -15,6 +15,7 @@ import {
 } from './game/types';
 import {
   collectRoomOrnament,
+  collectRoomWeapon,
   createMultiplayerRoom,
   finishMultiplayerRoom,
   joinMultiplayerRoom,
@@ -34,6 +35,7 @@ import {
   subscribeRoomSanta,
   syncHostSantaState,
   syncLocalPlayerState,
+  triggerRoomSantaStun,
   updateSurvivorAccount,
 } from './services/multiplayer';
 
@@ -50,11 +52,17 @@ const INITIAL_HUD: HudSnapshot = {
   santaDistance: 50,
   santaAngleDeg: 0,
   santaAlerted: false,
+  santaStunRemaining: 0,
   playerHeadingDeg: 0,
   exitAngleDeg: 0,
   exitDistance: 60,
   nearestOrnamentAngleDeg: null,
   nearestOrnamentDistance: null,
+  nearestWeaponAngleDeg: null,
+  nearestWeaponDistance: null,
+  equippedWeapon: null,
+  nextWeaponSpawnIn: 60,
+  dodgeCooldown: 0,
   pointerLocked: false,
   chimeCooldown: 0,
   chimeAngleDeg: null,
@@ -190,10 +198,21 @@ export default function App() {
               onCollectOrnament: (ornamentId) => {
                 collectRoomOrnament(room.roomId, ornamentId, room.ornamentsTotal);
               },
+              onCollectWeapon: (weaponId) => {
+                collectRoomWeapon(room.roomId, weaponId);
+              },
+              onTriggerSantaStun: () => {
+                triggerRoomSantaStun(room.roomId);
+              },
             },
           });
         }
-        engineRef.current?.applyRoomOrnaments(room.collectedOrnaments, room.exitUnlocked);
+        engineRef.current?.applyRoomState(
+          room.collectedOrnaments,
+          room.exitUnlocked,
+          room.collectedWeapons ?? [],
+          room.santaStunNonce ?? 0
+        );
       }
     });
 
@@ -290,6 +309,19 @@ export default function App() {
     setProfile(updated);
   };
 
+  const formatRoomError = (err: unknown, fallback: string): string => {
+    if (!(err instanceof Error)) return fallback;
+    if (err.message.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(err.message) as { error?: string };
+        return parsed.error || fallback;
+      } catch {
+        return fallback;
+      }
+    }
+    return err.message;
+  };
+
   const handleCreateRoom = async (roomName: string, isPublic: boolean) => {
     if (!profile) return;
     setRoomError(null);
@@ -299,7 +331,7 @@ export default function App() {
       setActiveRoom(room);
       setActiveRoomId(room.roomId);
     } catch (err) {
-      setRoomError(err instanceof Error ? err.message : 'Could not create room.');
+      setRoomError(formatRoomError(err, 'Could not create room.'));
     }
   };
 
@@ -312,7 +344,7 @@ export default function App() {
       setActiveRoom(room);
       setActiveRoomId(room.roomId);
     } catch (err) {
-      setRoomError(err instanceof Error ? err.message : 'Could not join room.');
+      setRoomError(formatRoomError(err, 'Could not join room.'));
     }
   };
 
@@ -358,6 +390,8 @@ export default function App() {
         onPause={() => engineRef.current?.pauseGame()}
         onToggleFlashlight={() => engineRef.current?.toggleFlashlight()}
         onTriggerChime={() => engineRef.current?.triggerChimeSense()}
+        onUseWeapon={() => engineRef.current?.useEquippedWeapon()}
+        onDodge={() => engineRef.current?.triggerDodge()}
         onToggleHudHidden={() => engineRef.current?.toggleHudHidden()}
         onLockPointer={() => engineRef.current?.requestPointerLockSafe()}
         onToggleChat={() => engineRef.current?.setChatOpen(!hud.chatOpen)}
