@@ -1,12 +1,22 @@
 import { GridCoord, MazeData } from './types';
 
-export const MAZE_SIZE = 17; // Must be odd (interior nodes 1..15)
+export const MAZE_SIZE = 27; // Larger 27x27 labyrinth (108m x 108m)
 export const CELL_SIZE = 4.0;
 export const WALL_HEIGHT = 3.8;
 
-function shuffle<T>(arr: T[]): T[] {
+function createRng(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function shuffle<T>(arr: T[], rand: () => number): T[] {
   for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = Math.floor(rand() * (i + 1));
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
   return arr;
@@ -28,7 +38,8 @@ export function worldToCell(x: number, z: number, size = MAZE_SIZE, cellSize = C
   };
 }
 
-export function generateMaze(ornamentCount = 5): MazeData {
+export function generateMaze(ornamentCount = 6, seed = Date.now()): MazeData {
+  const rand = createRng(seed);
   const size = MAZE_SIZE;
   const grid: number[][] = Array.from({ length: size }, () => Array(size).fill(1));
 
@@ -47,7 +58,7 @@ export function generateMaze(ornamentCount = 5): MazeData {
 
   while (stack.length > 0) {
     const curr = stack[stack.length - 1];
-    const shuffled = shuffle([...dirs]);
+    const shuffled = shuffle([...dirs], rand);
     let carved = false;
 
     for (const d of shuffled) {
@@ -67,8 +78,7 @@ export function generateMaze(ornamentCount = 5): MazeData {
     }
   }
 
-  // Carve strategic loops (~20% of interior walls separating two open cells)
-  // so players can outmaneuver Evil Santa rather than getting cornered in dead ends.
+  // Carve strategic loops (~24% of interior walls separating two open cells)
   const candidates: GridCoord[] = [];
   for (let r = 2; r < size - 2; r++) {
     for (let c = 2; c < size - 2; c++) {
@@ -80,7 +90,7 @@ export function generateMaze(ornamentCount = 5): MazeData {
       }
     }
   }
-  shuffle(candidates);
+  shuffle(candidates, rand);
   const loopCount = Math.floor(candidates.length * 0.24);
   for (let i = 0; i < loopCount; i++) {
     grid[candidates[i].r][candidates[i].c] = 0;
@@ -99,32 +109,35 @@ export function generateMaze(ornamentCount = 5): MazeData {
     }
   }
 
-  // Exit cell at one of the furthest corners/edges
-  openCells.sort((a, b) => b.dist - a.dist);
-  const exitCandidate = openCells.find((cell) => cell.r >= size - 4 && cell.c >= size - 4) ?? openCells[0];
-  const exitCell: GridCoord = { r: exitCandidate.r, c: exitCandidate.c };
+  // Carve the Maze Exit Gate right through the outer perimeter wall at the far corner (size-2, size-1)
+  const exitApproachR = size - 2;
+  const exitApproachC = size - 2;
+  grid[exitApproachR][exitApproachC] = 0;
+  const exitCell: GridCoord = { r: exitApproachR, c: size - 1 };
+  grid[exitCell.r][exitCell.c] = 0;
 
-  // Santa spawns far away from player (e.g., opposite diagonal quadrant)
+  openCells.sort((a, b) => b.dist - a.dist);
+
+  // Santa spawns far away from player & exit
   const santaCandidate =
     openCells.find(
       (cell) =>
-        cell.dist >= 14 &&
-        (cell.r !== exitCell.r || cell.c !== exitCell.c) &&
-        Math.abs(cell.r - exitCell.r) + Math.abs(cell.c - exitCell.c) >= 4
+        cell.dist >= 20 &&
+        Math.abs(cell.r - exitCell.r) + Math.abs(cell.c - exitCell.c) >= 8
     ) ?? openCells[1];
   const santaSpawn: GridCoord = { r: santaCandidate.r, c: santaCandidate.c };
 
-  // Distribute ornaments across distinct regions of the maze
+  // Distribute ornaments across distinct regions of the 27x27 maze
   const ornaments: GridCoord[] = [];
   const eligible = openCells.filter(
     (cell) =>
-      cell.dist >= 5 &&
-      (cell.r !== exitCell.r || cell.c !== exitCell.c) &&
+      cell.dist >= 6 &&
+      (cell.r !== exitApproachR || cell.c !== exitApproachC) &&
       (cell.r !== santaSpawn.r || cell.c !== santaSpawn.c)
   );
-  shuffle(eligible);
+  shuffle(eligible, rand);
 
-  let minSpacing = 6;
+  let minSpacing = 9;
   while (ornaments.length < ornamentCount && minSpacing >= 2) {
     for (const cand of eligible) {
       if (ornaments.length >= ornamentCount) break;

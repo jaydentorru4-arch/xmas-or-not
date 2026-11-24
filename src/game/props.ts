@@ -15,6 +15,7 @@ export interface ExitGateProp {
   portalMesh: THREE.Mesh;
   portalMat: THREE.MeshStandardMaterial;
   sigilMat: THREE.MeshStandardMaterial;
+  beaconMat: THREE.MeshBasicMaterial;
   gateLight: THREE.PointLight;
 }
 
@@ -171,49 +172,71 @@ export function createExitGate(
   );
   const sigilMat = track(
     new THREE.MeshStandardMaterial({
-      color: 0xff2233,
+      color: 0xff3344,
       emissive: 0xff1122,
-      emissiveIntensity: 2.2,
+      emissiveIntensity: 2.6,
       roughness: 0.25,
     })
   );
 
-  // Twin Candy-Cane Iron Pillars grounded at y = 0
-  const pillarGeo = track(new THREE.CylinderGeometry(0.22, 0.26, 3.1, 12));
+  // Twin Tall Candy-Cane Iron Pillars grounded at y = 0
+  const pillarGeo = track(new THREE.CylinderGeometry(0.26, 0.3, 3.6, 12));
   const leftPillar = new THREE.Mesh(pillarGeo, pillarMat);
-  leftPillar.position.set(-1.15, 1.55, 0);
+  leftPillar.position.set(-1.35, 1.8, 0);
   const rightPillar = new THREE.Mesh(pillarGeo, pillarMat);
-  rightPillar.position.set(1.15, 1.55, 0);
+  rightPillar.position.set(1.35, 1.8, 0);
   group.add(leftPillar, rightPillar);
 
+  // Pillar Lantern Caps
+  const lanternGeo = track(new THREE.SphereGeometry(0.22, 10, 10));
+  const leftLantern = new THREE.Mesh(lanternGeo, sigilMat);
+  leftLantern.position.set(-1.35, 3.72, 0);
+  const rightLantern = new THREE.Mesh(lanternGeo, sigilMat);
+  rightLantern.position.set(1.35, 3.72, 0);
+  group.add(leftLantern, rightLantern);
+
   // Archway Crossbeam + Crown Sigil
-  const beam = new THREE.Mesh(track(new THREE.BoxGeometry(2.85, 0.34, 0.42)), ironMat);
-  beam.position.set(0, 3.1, 0);
+  const beam = new THREE.Mesh(track(new THREE.BoxGeometry(3.35, 0.38, 0.46)), ironMat);
+  beam.position.set(0, 3.55, 0);
   group.add(beam);
 
-  const sigil = new THREE.Mesh(track(new THREE.OctahedronGeometry(0.28, 0)), sigilMat);
-  sigil.position.set(0, 3.55, 0);
+  const sigil = new THREE.Mesh(track(new THREE.OctahedronGeometry(0.36, 0)), sigilMat);
+  sigil.position.set(0, 4.1, 0);
   group.add(sigil);
+
+  // Towering Sky Beacon Column visible above maze walls in the night fog
+  const beaconMat = track(
+    new THREE.MeshBasicMaterial({
+      color: 0xff2233,
+      transparent: true,
+      opacity: 0.16,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    })
+  );
+  const skyBeacon = new THREE.Mesh(track(new THREE.CylinderGeometry(0.35, 1.15, 22, 12, 1, true)), beaconMat);
+  skyBeacon.position.set(0, 14, 0);
+  group.add(skyBeacon);
 
   // Shimmering Portal Barrier inside archway
   const portalMat = track(
     new THREE.MeshStandardMaterial({
       color: 0x3b0a12,
       emissive: 0xaa1122,
-      emissiveIntensity: 1.1,
+      emissiveIntensity: 1.3,
       transparent: true,
-      opacity: 0.52,
+      opacity: 0.56,
       roughness: 0.15,
       metalness: 0.2,
       side: THREE.DoubleSide,
     })
   );
-  const portalMesh = new THREE.Mesh(track(new THREE.PlaneGeometry(1.9, 2.85)), portalMat);
-  portalMesh.position.set(0, 1.45, 0);
+  const portalMesh = new THREE.Mesh(track(new THREE.PlaneGeometry(2.3, 3.35)), portalMat);
+  portalMesh.position.set(0, 1.68, 0);
   group.add(portalMesh);
 
-  const gateLight = new THREE.PointLight(0xff2233, 3.2, 12, 1.6);
-  gateLight.position.set(0, 2.2, 0);
+  const gateLight = new THREE.PointLight(0xff2233, 4.2, 15, 1.5);
+  gateLight.position.set(0, 2.4, 0);
   group.add(gateLight);
 
   return {
@@ -221,6 +244,7 @@ export function createExitGate(
     portalMesh,
     portalMat,
     sigilMat,
+    beaconMat,
     gateLight,
   };
 }

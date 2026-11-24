@@ -248,7 +248,7 @@ export function createEvilSanta(
   rightArm.add(hookStaff);
 
   // Eerie crimson face/chest aura light so you see his red silhouette bleeding around corners
-  const auraLight = new THREE.PointLight(0xff1e00, 2.2, 8.5, 1.8);
+  const auraLight = new THREE.PointLight(0xff1e00, 3.2, 13.5, 1.5);
   auraLight.position.set(0, 1.95, 0.45);
   bodyPivot.add(auraLight);
 
@@ -283,10 +283,10 @@ export function createEvilSanta(
 
     // Flicker eyes & aura intensely when alerted
     const pulse = alerted
-      ? 2.8 + Math.sin(time * 18) * 0.9 + Math.cos(time * 7) * 0.5
-      : 1.6 + Math.sin(time * 4) * 0.3;
+      ? 4.6 + Math.sin(time * 18) * 1.1 + Math.cos(time * 7) * 0.6
+      : 2.8 + Math.sin(time * 4) * 0.4;
     auraLight.intensity = pulse;
-    eyeGlowMat.emissiveIntensity = alerted ? 4.4 : 2.6;
+    eyeGlowMat.emissiveIntensity = alerted ? 4.8 : 3.0;
   };
 
   const dispose = () => {

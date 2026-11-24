@@ -127,7 +127,7 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
   snowFloorColor.colorSpace = THREE.SRGBColorSpace;
   snowFloorColor.wrapS = THREE.RepeatWrapping;
   snowFloorColor.wrapT = THREE.RepeatWrapping;
-  snowFloorColor.repeat.set(17, 17);
+  snowFloorColor.repeat.set(27, 27);
   snowFloorColor.anisotropy = maxAnisotropy;
 
   // Floor roughness (ice patches shinier, snow rougher)
@@ -144,7 +144,7 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
   const snowFloorRoughness = new THREE.CanvasTexture(frc);
   snowFloorRoughness.wrapS = THREE.RepeatWrapping;
   snowFloorRoughness.wrapT = THREE.RepeatWrapping;
-  snowFloorRoughness.repeat.set(17, 17);
+  snowFloorRoughness.repeat.set(27, 27);
 
   // 3. Weathered Candy-Cane Stripe Texture
   const [cc, cctx] = makeCanvas(256, 256);

@@ -1,0 +1,344 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core primitives
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isVerifiedOwner(uid) {
+      return isVerifiedUser() && request.auth.uid == uid;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidColor(color) {
+      return color is string && color.size() == 7 && color.matches('^#[0-9a-fA-F]{6}$');
+    }
+
+    // Entity validation blueprints
+    function isValidPublicProfile(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'coatColor', 'escapes', 'gamesPlayed', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'coatColor', 'escapes', 'gamesPlayed', 'createdAt', 'updatedAt'])
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && data.displayName is string
+        && data.displayName.size() >= 2
+        && data.displayName.size() <= 24
+        && isValidColor(data.coatColor)
+        && data.escapes is number
+        && data.escapes >= 0
+        && data.escapes <= 100000
+        && data.gamesPlayed is number
+        && data.gamesPlayed >= 0
+        && data.gamesPlayed <= 100000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPrivateInfo(data) {
+      return data.keys().hasAll(['uid', 'email', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'createdAt', 'updatedAt'])
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && data.email is string
+        && data.email.size() >= 3
+        && data.email.size() <= 254
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidGlobalChatMessage(data) {
+      return data.keys().hasAll(['senderId', 'senderName', 'coatColor', 'channel', 'text', 'createdAt'])
+        && data.keys().hasOnly(['senderId', 'senderName', 'coatColor', 'channel', 'text', 'createdAt'])
+        && isValidId(data.senderId)
+        && data.senderId == request.auth.uid
+        && data.senderName is string
+        && data.senderName.size() >= 1
+        && data.senderName.size() <= 24
+        && isValidColor(data.coatColor)
+        && data.channel == 'global'
+        && data.text is string
+        && data.text.size() >= 1
+        && data.text.size() <= 240
+        && data.createdAt is timestamp;
+    }
+
+    function isValidRoom(data) {
+      return data.keys().hasAll([
+          'roomId', 'name', 'hostId', 'hostName', 'difficulty', 'mazeSeed',
+          'status', 'collectedOrnaments', 'ornamentsTotal', 'exitUnlocked',
+          'isPublic', 'playerCount', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'roomId', 'name', 'hostId', 'hostName', 'difficulty', 'mazeSeed',
+          'status', 'collectedOrnaments', 'ornamentsTotal', 'exitUnlocked',
+          'isPublic', 'playerCount', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.roomId)
+        && data.roomId.size() >= 4
+        && data.roomId.size() <= 32
+        && data.name is string
+        && data.name.size() >= 2
+        && data.name.size() <= 40
+        && isValidId(data.hostId)
+        && data.hostName is string
+        && data.hostName.size() >= 1
+        && data.hostName.size() <= 24
+        && data.difficulty in ['normal', 'nightmare']
+        && data.mazeSeed is number
+        && data.status in ['waiting', 'playing', 'finished']
+        && data.collectedOrnaments is list
+        && data.collectedOrnaments.size() <= 10
+        && (data.collectedOrnaments.size() == 0 || data.collectedOrnaments[0] is number)
+        && data.ornamentsTotal is number
+        && data.ornamentsTotal >= 1
+        && data.ornamentsTotal <= 10
+        && data.exitUnlocked is bool
+        && data.isPublic is bool
+        && data.playerCount is number
+        && data.playerCount >= 0
+        && data.playerCount <= 12
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidRoomPlayer(data) {
+      return data.keys().hasAll([
+          'uid', 'roomId', 'displayName', 'coatColor',
+          'x', 'z', 'yaw', 'flashlightOn', 'alive', 'escaped', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'roomId', 'displayName', 'coatColor',
+          'x', 'z', 'yaw', 'flashlightOn', 'alive', 'escaped', 'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && isValidId(data.roomId)
+        && data.roomId.size() >= 4
+        && data.roomId.size() <= 32
+        && data.displayName is string
+        && data.displayName.size() >= 1
+        && data.displayName.size() <= 24
+        && isValidColor(data.coatColor)
+        && data.x is number
+        && data.x >= -200 && data.x <= 200
+        && data.z is number
+        && data.z >= -200 && data.z <= 200
+        && data.yaw is number
+        && data.flashlightOn is bool
+        && data.alive is bool
+        && data.escaped is bool
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSantaState(data) {
+      return data.keys().hasAll(['x', 'z', 'yaw', 'speed', 'alerted', 'updatedAt'])
+        && data.keys().hasOnly(['x', 'z', 'yaw', 'speed', 'alerted', 'updatedAt'])
+        && data.x is number
+        && data.x >= -200 && data.x <= 200
+        && data.z is number
+        && data.z >= -200 && data.z <= 200
+        && data.yaw is number
+        && data.speed is number
+        && data.speed >= 0 && data.speed <= 20
+        && data.alerted is bool
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidRoomChatMessage(data) {
+      return data.keys().hasAll(['senderId', 'senderName', 'coatColor', 'roomId', 'text', 'createdAt'])
+        && data.keys().hasOnly(['senderId', 'senderName', 'coatColor', 'roomId', 'text', 'createdAt'])
+        && isValidId(data.senderId)
+        && data.senderId == request.auth.uid
+        && data.senderName is string
+        && data.senderName.size() >= 1
+        && data.senderName.size() <= 24
+        && isValidColor(data.coatColor)
+        && isValidId(data.roomId)
+        && data.roomId.size() >= 4
+        && data.roomId.size() <= 32
+        && data.text is string
+        && data.text.size() >= 1
+        && data.text.size() <= 240
+        && data.createdAt is timestamp;
+    }
+
+    // Public Survivor Profiles (no PII)
+    match /users/{userId}/public/profile {
+      allow get: if isSignedIn() && isValidId(userId);
+      allow list: if false;
+      allow create: if isVerifiedOwner(userId)
+        && isValidId(userId)
+        && isValidPublicProfile(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedOwner(userId)
+        && isValidId(userId)
+        && isValidPublicProfile(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'coatColor', 'escapes', 'gamesPlayed', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // Private PII User Info (owner only)
+    match /users/{userId}/private/info {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if false;
+      allow create: if isVerifiedOwner(userId)
+        && isValidId(userId)
+        && isValidPrivateInfo(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedOwner(userId)
+        && isValidId(userId)
+        && isValidPrivateInfo(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // Global Lobby Chat
+    match /globalChat/{messageId} {
+      allow get: if isSignedIn() && isValidId(messageId) && existing().channel == 'global';
+      allow list: if isSignedIn() && existing().channel == 'global';
+      allow create: if isVerifiedUser()
+        && isValidId(messageId)
+        && isValidGlobalChatMessage(incoming())
+        && incoming().createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    // Multiplayer Rooms
+    match /rooms/{roomId} {
+      allow get: if isSignedIn() && isValidId(roomId);
+      allow list: if isSignedIn() && existing().isPublic == true;
+      allow create: if isVerifiedUser()
+        && isValidId(roomId)
+        && isValidRoom(incoming())
+        && incoming().roomId == roomId
+        && incoming().hostId == request.auth.uid
+        && incoming().status == 'waiting'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(roomId)
+        && isValidRoom(incoming())
+        && existing().status != 'finished'
+        && incoming().roomId == existing().roomId
+        && incoming().hostId == existing().hostId
+        && incoming().mazeSeed == existing().mazeSeed
+        && incoming().difficulty == existing().difficulty
+        && incoming().ornamentsTotal == existing().ornamentsTotal
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action 1: Host controls match lifecycle
+          (
+            existing().hostId == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'playerCount', 'collectedOrnaments', 'exitUnlocked', 'updatedAt'])
+          )
+          ||
+          // Action 2: Joined survivor collects ornaments or updates headcount
+          (
+            exists(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid))
+            && incoming().diff(existing()).affectedKeys().hasOnly(['playerCount', 'collectedOrnaments', 'exitUnlocked', 'updatedAt'])
+          )
+        );
+      allow delete: if isVerifiedUser() && isValidId(roomId) && existing().hostId == request.auth.uid;
+
+      // Room Players (Master Gate verifies parent room exists)
+      match /players/{playerId} {
+        allow get: if isSignedIn()
+          && isValidId(roomId)
+          && isValidId(playerId)
+          && exists(/databases/$(database)/documents/rooms/$(roomId));
+        allow list: if isSignedIn() && existing().roomId == roomId;
+        allow create: if isVerifiedOwner(playerId)
+          && isValidId(roomId)
+          && isValidId(playerId)
+          && isValidRoomPlayer(incoming())
+          && incoming().roomId == roomId
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/rooms/$(roomId));
+        allow update: if isVerifiedOwner(playerId)
+          && isValidId(roomId)
+          && isValidId(playerId)
+          && isValidRoomPlayer(incoming())
+          && incoming().uid == existing().uid
+          && incoming().roomId == existing().roomId
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'displayName', 'coatColor', 'x', 'z', 'yaw',
+            'flashlightOn', 'alive', 'escaped', 'updatedAt'
+          ]);
+        allow delete: if isVerifiedOwner(playerId) && isValidId(roomId) && isValidId(playerId);
+      }
+
+      // Host-Authoritative Evil Santa Live State
+      match /santa/live {
+        allow get: if isSignedIn()
+          && isValidId(roomId)
+          && exists(/databases/$(database)/documents/rooms/$(roomId));
+        allow list: if false;
+        allow create: if isVerifiedUser()
+          && isValidId(roomId)
+          && isValidSantaState(incoming())
+          && incoming().updatedAt == request.time
+          && get(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == request.auth.uid;
+        allow update: if isVerifiedUser()
+          && isValidId(roomId)
+          && isValidSantaState(incoming())
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['x', 'z', 'yaw', 'speed', 'alerted', 'updatedAt'])
+          && get(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == request.auth.uid;
+        allow delete: if false;
+      }
+
+      // Room-Scoped Live Chat
+      match /messages/{messageId} {
+        allow get: if isSignedIn()
+          && isValidId(roomId)
+          && isValidId(messageId)
+          && exists(/databases/$(database)/documents/rooms/$(roomId));
+        allow list: if isSignedIn() && existing().roomId == roomId;
+        allow create: if isVerifiedUser()
+          && isValidId(roomId)
+          && isValidId(messageId)
+          && isValidRoomChatMessage(incoming())
+          && incoming().roomId == roomId
+          && incoming().createdAt == request.time
+          && exists(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid));
+        allow update, delete: if false;
+      }
+    }
+  }
+}

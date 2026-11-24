@@ -3,8 +3,12 @@ import {
   Bell,
   ChevronDown,
   ChevronUp,
+  Compass,
   Flashlight,
+  MessageSquare,
   Pause,
+  Star,
+  Users,
   Volume2,
   VolumeX,
 } from 'lucide-react';
@@ -12,12 +16,14 @@ import { HudSnapshot } from '../game/types';
 
 interface GameHUDProps {
   hud: HudSnapshot;
+  teammateCount: number;
   onToggleMute: () => void;
   onPause: () => void;
   onToggleFlashlight: () => void;
   onTriggerChime: () => void;
   onToggleHudHidden: () => void;
   onLockPointer: () => void;
+  onToggleChat: () => void;
 }
 
 function formatTime(sec: number): string {
@@ -27,25 +33,86 @@ function formatTime(sec: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
+function normalizeDeltaDeg(deg: number): number {
+  let d = ((deg + 180) % 360 + 360) % 360 - 180;
+  if (d === -180) d = 180;
+  return d;
+}
+
+function describeDirection(relDeg: number): string {
+  const abs = Math.abs(relDeg);
+  if (abs <= 35) return 'Ahead';
+  if (abs >= 145) return 'Behind';
+  return relDeg > 0 ? 'Right' : 'Left';
+}
+
+const CARDINALS = [
+  { label: 'N', deg: 0 },
+  { label: 'NE', deg: 45 },
+  { label: 'E', deg: 90 },
+  { label: 'SE', deg: 135 },
+  { label: 'S', deg: 180 },
+  { label: 'SW', deg: 225 },
+  { label: 'W', deg: 270 },
+  { label: 'NW', deg: 315 },
+];
+
+const COMPASS_HALF_FOV = 75;
+
+function angleToPercent(relDeg: number): number {
+  const clamped = Math.max(-COMPASS_HALF_FOV, Math.min(COMPASS_HALF_FOV, relDeg));
+  return 50 + (clamped / COMPASS_HALF_FOV) * 46;
+}
+
 export const GameHUD: React.FC<GameHUDProps> = ({
   hud,
+  teammateCount,
   onToggleMute,
   onPause,
   onToggleFlashlight,
   onTriggerChime,
   onToggleHudHidden,
   onLockPointer,
+  onToggleChat,
 }) => {
   if (hud.phase !== 'playing') return null;
 
-  // Terror intensity scales from 0 (dist >= 16m) to 1 (dist <= 2.5m)
-  const terror = Math.max(0, Math.min(1, (16 - hud.santaDistance) / 13.5));
-  const dangerText =
-    hud.santaDistance < 7.5
-      ? 'Santa is right behind you'
-      : hud.santaDistance < 14
-        ? 'Heavy footsteps nearby'
-        : null;
+  const terror = hud.spectating ? 0 : Math.max(0, Math.min(1, (20 - hud.santaDistance) / 17.5));
+  const rad = (hud.santaAngleDeg * Math.PI) / 180;
+  const frontWeight = Math.max(0, Math.cos(rad));
+  const backWeight = Math.max(0, -Math.cos(rad));
+  const rightWeight = Math.max(0, Math.sin(rad));
+  const leftWeight = Math.max(0, -Math.sin(rad));
+
+  const threatPct = Math.max(0, Math.min(100, ((26 - hud.santaDistance) / 24) * 100));
+  const santaDistRound = Math.round(hud.santaDistance);
+  const santaDir = describeDirection(hud.santaAngleDeg);
+
+  let threatLabel = 'Quiet · Snow drifting';
+  let threatTextClass = 'text-slate-400';
+  let threatBarClass = 'bg-slate-600';
+
+  if (hud.spectating) {
+    threatLabel = 'Spectating surviving teammates';
+    threatTextClass = 'text-sky-300 font-medium';
+    threatBarClass = 'bg-sky-500';
+  } else if (hud.santaDistance < 8.5 || (hud.santaAlerted && hud.santaDistance < 14)) {
+    threatLabel = `Santa hunting (${santaDir} · ${santaDistRound}m)`;
+    threatTextClass = 'text-red-400 font-semibold';
+    threatBarClass = 'bg-red-500';
+  } else if (hud.santaDistance < 16) {
+    threatLabel = `Santa approaching (${santaDir} · ${santaDistRound}m)`;
+    threatTextClass = 'text-orange-300 font-medium';
+    threatBarClass = 'bg-orange-400';
+  } else if (hud.santaDistance < 25) {
+    threatLabel = `Sleigh bells distant (${santaDir} · ${santaDistRound}m)`;
+    threatTextClass = 'text-amber-300';
+    threatBarClass = 'bg-amber-400';
+  }
+
+  const exitPct = angleToPercent(hud.exitAngleDeg);
+  const ornamentPct =
+    hud.nearestOrnamentAngleDeg !== null ? angleToPercent(hud.nearestOrnamentAngleDeg) : null;
 
   return (
     <div className="fixed inset-0 z-10 pointer-events-none">
@@ -58,21 +125,60 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         }}
       />
 
-      {/* Dynamic crimson terror vignette when Santa closes in */}
+      {/* Directional Crimson Threat Glow */}
       {terror > 0.02 && (
-        <div
-          className="absolute inset-0 pointer-events-none transition-opacity duration-150"
-          style={{
-            opacity: terror * 0.85,
-            background:
-              'radial-gradient(circle at 50% 50%, rgba(120,0,12,0) 42%, rgba(155,8,20,0.68) 100%)',
-          }}
-        />
+        <>
+          <div
+            className="absolute inset-0 pointer-events-none transition-opacity duration-150"
+            style={{
+              opacity: terror * 0.72,
+              background:
+                'radial-gradient(circle at 50% 50%, rgba(120,0,12,0) 46%, rgba(155,8,20,0.62) 100%)',
+            }}
+          />
+          {leftWeight > 0.1 && (
+            <div
+              className="absolute inset-y-0 left-0 w-24 pointer-events-none"
+              style={{
+                opacity: terror * leftWeight * 0.95,
+                background: 'linear-gradient(to right, rgba(220,20,35,0.65), transparent)',
+              }}
+            />
+          )}
+          {rightWeight > 0.1 && (
+            <div
+              className="absolute inset-y-0 right-0 w-24 pointer-events-none"
+              style={{
+                opacity: terror * rightWeight * 0.95,
+                background: 'linear-gradient(to left, rgba(220,20,35,0.65), transparent)',
+              }}
+            />
+          )}
+          {backWeight > 0.1 && (
+            <div
+              className="absolute inset-x-0 bottom-0 h-24 pointer-events-none"
+              style={{
+                opacity: terror * backWeight * 0.95,
+                background: 'linear-gradient(to top, rgba(220,20,35,0.68), transparent)',
+              }}
+            />
+          )}
+          {frontWeight > 0.1 && (
+            <div
+              className="absolute inset-x-0 top-0 h-20 pointer-events-none"
+              style={{
+                opacity: terror * frontWeight * 0.85,
+                background: 'linear-gradient(to bottom, rgba(220,20,35,0.58), transparent)',
+              }}
+            />
+          )}
+        </>
       )}
 
-      {/* Top Row: Objective (Left) & Actions (Right) */}
+      {/* Top Row */}
       <div className="absolute top-0 left-0 right-0 flex items-start justify-between px-5 pt-4 gap-4">
-        <div className="pointer-events-auto flex flex-col gap-1 bg-[#060913]/85 border border-white/12 rounded-lg px-4 py-2.5">
+        {/* Top-Left Objective Readout */}
+        <div className="pointer-events-auto flex flex-col gap-1 bg-[#060913]/88 border border-white/12 rounded-lg px-4 py-2.5 shrink-0">
           <div className="flex items-center gap-3 text-sm font-medium text-slate-100 whitespace-nowrap">
             <span className={hud.exitUnlocked ? 'text-emerald-400 font-semibold' : 'text-amber-300 font-semibold'}>
               {hud.exitUnlocked
@@ -83,20 +189,86 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               ·
             </span>
             <span className="font-mono-tabular text-slate-300">{formatTime(hud.elapsedSeconds)}</span>
-            <span aria-hidden="true" className="text-slate-500">
-              ·
-            </span>
-            <span className="text-xs text-slate-400 capitalize">{hud.difficulty}</span>
+            {hud.isMultiplayer && (
+              <>
+                <span aria-hidden="true" className="text-slate-500">
+                  ·
+                </span>
+                <span className="inline-flex items-center gap-1 text-xs text-sky-300">
+                  <Users className="w-3.5 h-3.5" />
+                  <span>{teammateCount}</span>
+                </span>
+              </>
+            )}
           </div>
-          {dangerText && (
-            <div className="text-xs font-medium text-red-400">
-              {dangerText}
-            </div>
-          )}
+          <div className="text-xs text-slate-400 whitespace-nowrap">
+            {hud.spectating
+              ? 'WASD to free-fly or watch teammates'
+              : hud.exitUnlocked
+                ? `Follow EXIT marker (${Math.round(hud.exitDistance)}m)`
+                : hud.nearestOrnamentDistance !== null
+                  ? `Nearest star ${Math.round(hud.nearestOrnamentDistance)}m · Exit ${Math.round(hud.exitDistance)}m`
+                  : `Exit ${Math.round(hud.exitDistance)}m`}
+          </div>
         </div>
 
+        {/* Top-Center: Exit Compass & Santa Proximity */}
+        <div className="hidden sm:flex flex-col items-center gap-1.5 w-[340px] max-w-[44vw]">
+          <div className="relative w-full h-10 bg-[#060913]/90 border border-white/15 rounded-lg overflow-hidden">
+            <div className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2 w-px bg-white/30" />
+
+            {CARDINALS.map((c) => {
+              const rel = normalizeDeltaDeg(c.deg - hud.playerHeadingDeg);
+              if (Math.abs(rel) > COMPASS_HALF_FOV) return null;
+              const leftPct = 50 + (rel / COMPASS_HALF_FOV) * 46;
+              return (
+                <div
+                  key={c.label}
+                  className="absolute top-1 -translate-x-1/2 text-[10px] font-mono-tabular font-medium text-slate-400"
+                  style={{ left: `${leftPct}%` }}
+                >
+                  {c.label}
+                </div>
+              );
+            })}
+
+            {!hud.exitUnlocked && ornamentPct !== null && (
+              <div
+                className="absolute bottom-1 -translate-x-1/2 flex items-center gap-0.5 text-amber-300"
+                style={{ left: `${ornamentPct}%` }}
+                title="Nearest Ornament"
+              >
+                <Star className="w-3 h-3 fill-amber-300" />
+              </div>
+            )}
+
+            <div
+              className={`absolute bottom-1 -translate-x-1/2 flex items-center gap-1 px-1 text-[11px] font-mono-tabular font-semibold whitespace-nowrap ${
+                hud.exitUnlocked ? 'text-emerald-300' : 'text-red-300'
+              }`}
+              style={{ left: `${exitPct}%` }}
+            >
+              <Compass className="w-3 h-3 shrink-0" />
+              <span>EXIT {Math.round(hud.exitDistance)}m</span>
+            </div>
+          </div>
+
+          <div className="w-full flex items-center justify-between gap-3 bg-[#060913]/88 border border-white/12 rounded-md px-3 py-1">
+            <span className={`text-xs whitespace-nowrap truncate ${threatTextClass}`}>
+              {threatLabel}
+            </span>
+            <div className="w-16 h-1.5 bg-slate-800 rounded-sm overflow-hidden shrink-0">
+              <div
+                className={`h-full transition-all duration-150 ${threatBarClass}`}
+                style={{ width: `${Math.round(hud.spectating ? 100 : threatPct)}%` }}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Top-Right Controls */}
         <div className="pointer-events-auto flex items-center gap-2 shrink-0">
-          {!hud.pointerLocked && (
+          {!hud.pointerLocked && !hud.chatOpen && (
             <button
               type="button"
               onClick={onLockPointer}
@@ -120,19 +292,30 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             className="flex items-center gap-2 px-3.5 h-10 text-xs font-medium text-slate-100 bg-[#060913]/88 border border-white/15 rounded-lg hover:bg-[#0e1528] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Pause className="w-3.5 h-3.5" />
-            <span>Pause</span>
+            <span>{hud.isMultiplayer ? 'Menu' : 'Pause'}</span>
           </button>
         </div>
       </div>
 
-      {/* Center Reticle & Chime Sense Bearing */}
+      {/* Mobile Compact Strip */}
+      <div className="sm:hidden absolute top-20 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-[#060913]/90 border border-white/15 rounded-lg px-3 py-1.5 text-xs whitespace-nowrap">
+        <span className={hud.exitUnlocked ? 'text-emerald-300 font-semibold' : 'text-red-300 font-semibold'}>
+          EXIT {describeDirection(hud.exitAngleDeg)} · {Math.round(hud.exitDistance)}m
+        </span>
+        <span aria-hidden="true" className="text-slate-600">
+          ·
+        </span>
+        <span className={threatTextClass}>{threatLabel}</span>
+      </div>
+
+      {/* Center Reticle & Chime Sense Corridor Turn Arrow */}
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
         <div className="relative flex items-center justify-center">
           <div className="w-1.5 h-1.5 rounded-full bg-white/80" />
           {hud.chimeAngleDeg !== null && (
             <div
               className="absolute w-24 h-24 flex items-start justify-center transition-transform duration-75"
-              style={{ transform: `rotate(${-hud.chimeAngleDeg}deg)` }}
+              style={{ transform: `rotate(${hud.chimeAngleDeg}deg)` }}
             >
               <div className="w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-b-[11px] border-b-amber-300" />
             </div>
@@ -142,7 +325,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
 
       {/* Transient Event Subtitle Banner */}
       {(hud.statusBanner || hud.chimeAngleDeg !== null) && (
-        <div className="absolute top-20 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5 pointer-events-none max-w-md px-4 text-center">
+        <div className="absolute top-28 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5 pointer-events-none max-w-md px-4 text-center">
           {hud.statusBanner && (
             <div className="bg-[#060913]/90 border border-white/15 rounded-lg px-4 py-2 text-sm text-slate-100">
               {hud.statusBanner}
@@ -150,13 +333,13 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           )}
           {hud.chimeAngleDeg !== null && (
             <div className="bg-[#060913]/85 border border-amber-400/35 rounded-lg px-3 py-1 text-xs font-medium text-amber-200 whitespace-nowrap">
-              Chime resonance: {hud.chimeTargetLabel}
+              Chime guide: {hud.chimeTargetLabel} ({describeDirection(hud.chimeAngleDeg)})
             </div>
           )}
         </div>
       )}
 
-      {/* Collapsible Bottom Control Dock (Zero Center Occlusion) */}
+      {/* Collapsible Bottom Control Dock */}
       <div
         className={`fixed bottom-5 left-1/2 -translate-x-1/2 flex flex-col items-center transition-transform duration-200 ${
           hud.hudHidden ? 'translate-y-[calc(100%-34px)]' : 'translate-y-0'
@@ -171,9 +354,8 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           <span>{hud.hudHidden ? 'Show Controls' : 'Hide Controls'}</span>
         </button>
 
-        <div className="pointer-events-auto flex flex-wrap sm:flex-nowrap items-center gap-4 px-5 py-3 bg-[#060913]/90 border border-white/15 rounded-xl max-w-[94vw]">
-          {/* Stamina Meter */}
-          <div className="flex items-center gap-2.5 min-w-[140px]">
+        <div className="pointer-events-auto flex flex-wrap sm:flex-nowrap items-center gap-3 sm:gap-4 px-4 sm:px-5 py-3 bg-[#060913]/90 border border-white/15 rounded-xl max-w-[94vw]">
+          <div className="flex items-center gap-2.5 min-w-[130px]">
             <span className="text-xs font-medium text-slate-300 whitespace-nowrap">Stamina</span>
             <div className="w-24 h-2 bg-slate-800 rounded-sm overflow-hidden">
               <div
@@ -187,10 +369,10 @@ export const GameHUD: React.FC<GameHUDProps> = ({
 
           <div className="hidden sm:block w-px h-5 bg-white/12" aria-hidden="true" />
 
-          {/* Flashlight Button + Battery */}
           <button
             type="button"
             onClick={onToggleFlashlight}
+            disabled={!hud.alive}
             className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
               hud.flashlightOn
                 ? 'bg-amber-500/18 border-amber-400/45 text-amber-200'
@@ -202,13 +384,12 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             <span className="font-mono-tabular text-slate-300">{Math.round(hud.battery)}%</span>
           </button>
 
-          {/* Chime Sense Button */}
           <button
             type="button"
             onClick={onTriggerChime}
-            disabled={hud.chimeCooldown > 0}
+            disabled={hud.chimeCooldown > 0 || !hud.alive}
             className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-              hud.chimeCooldown > 0
+              hud.chimeCooldown > 0 || !hud.alive
                 ? 'bg-slate-900/60 border-white/10 text-slate-500 cursor-not-allowed'
                 : 'bg-slate-900/90 border-white/15 text-slate-200 hover:bg-slate-800 cursor-pointer'
             }`}
@@ -217,13 +398,28 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             <span>
               {hud.chimeCooldown > 0
                 ? `Chime (${Math.ceil(hud.chimeCooldown)}s)`
-                : 'Chime Sense (C)'}
+                : 'Chime Guide (C)'}
             </span>
           </button>
 
-          <div className="hidden md:block w-px h-5 bg-white/12" aria-hidden="true" />
+          {hud.isMultiplayer && (
+            <button
+              type="button"
+              onClick={onToggleChat}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                hud.chatOpen
+                  ? 'bg-sky-500/20 border-sky-400/50 text-sky-200'
+                  : 'bg-slate-900/90 border-white/15 text-slate-200 hover:bg-slate-800'
+              }`}
+            >
+              <MessageSquare className="w-3.5 h-3.5" />
+              <span>Chat (T)</span>
+            </button>
+          )}
 
-          <div className="hidden md:flex items-center gap-2 text-xs text-slate-400 whitespace-nowrap">
+          <div className="hidden lg:block w-px h-5 bg-white/12" aria-hidden="true" />
+
+          <div className="hidden lg:flex items-center gap-2 text-xs text-slate-400 whitespace-nowrap">
             <span>WASD Move</span>
             <span aria-hidden="true">·</span>
             <span>Drag / Q-E Look</span>

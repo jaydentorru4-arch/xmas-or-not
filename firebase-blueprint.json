@@ -1,0 +1,341 @@
+{
+  "entities": {
+    "PublicProfile": {
+      "title": "PublicProfile",
+      "description": "Public survivor profile visible to other online players.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 24
+        },
+        "coatColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
+        },
+        "escapes": {
+          "type": "number"
+        },
+        "gamesPlayed": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "displayName", "coatColor", "escapes", "gamesPlayed", "createdAt", "updatedAt"]
+    },
+    "PrivateUserInfo": {
+      "title": "PrivateUserInfo",
+      "description": "Private PII user account record accessible only to the account owner.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "createdAt", "updatedAt"]
+    },
+    "GlobalChatMessage": {
+      "title": "GlobalChatMessage",
+      "description": "Lobby chat message shared among signed-in survivors.",
+      "type": "object",
+      "properties": {
+        "senderId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "senderName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "coatColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
+        },
+        "channel": {
+          "type": "string",
+          "enum": ["global"]
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["senderId", "senderName", "coatColor", "channel", "text", "createdAt"]
+    },
+    "GameRoom": {
+      "title": "GameRoom",
+      "description": "Online multiplayer maze room state and shared ornament progression.",
+      "type": "object",
+      "properties": {
+        "roomId": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 32,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 40
+        },
+        "hostId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "hostName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "difficulty": {
+          "type": "string",
+          "enum": ["normal", "nightmare"]
+        },
+        "mazeSeed": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["waiting", "playing", "finished"]
+        },
+        "collectedOrnaments": {
+          "type": "array"
+        },
+        "ornamentsTotal": {
+          "type": "number"
+        },
+        "exitUnlocked": {
+          "type": "boolean"
+        },
+        "isPublic": {
+          "type": "boolean"
+        },
+        "playerCount": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "roomId",
+        "name",
+        "hostId",
+        "hostName",
+        "difficulty",
+        "mazeSeed",
+        "status",
+        "collectedOrnaments",
+        "ornamentsTotal",
+        "exitUnlocked",
+        "isPublic",
+        "playerCount",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "RoomPlayer": {
+      "title": "RoomPlayer",
+      "description": "Real-time player transform and status inside a multiplayer room.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "roomId": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 32,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "coatColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
+        },
+        "x": {
+          "type": "number"
+        },
+        "z": {
+          "type": "number"
+        },
+        "yaw": {
+          "type": "number"
+        },
+        "flashlightOn": {
+          "type": "boolean"
+        },
+        "alive": {
+          "type": "boolean"
+        },
+        "escaped": {
+          "type": "boolean"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "roomId",
+        "displayName",
+        "coatColor",
+        "x",
+        "z",
+        "yaw",
+        "flashlightOn",
+        "alive",
+        "escaped",
+        "updatedAt"
+      ]
+    },
+    "SantaLiveState": {
+      "title": "SantaLiveState",
+      "description": "Host-authoritative Evil Santa position and alert state for a room.",
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "number"
+        },
+        "z": {
+          "type": "number"
+        },
+        "yaw": {
+          "type": "number"
+        },
+        "speed": {
+          "type": "number"
+        },
+        "alerted": {
+          "type": "boolean"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["x", "z", "yaw", "speed", "alerted", "updatedAt"]
+    },
+    "RoomChatMessage": {
+      "title": "RoomChatMessage",
+      "description": "In-room / in-game chat message sent by a joined survivor.",
+      "type": "object",
+      "properties": {
+        "senderId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "senderName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "coatColor": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
+        },
+        "roomId": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 32,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["senderId", "senderName", "coatColor", "roomId", "text", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/public/profile": {
+      "schema": { "$ref": "#/entities/PublicProfile" },
+      "description": "Public survivor profile without PII."
+    },
+    "/users/{userId}/private/info": {
+      "schema": { "$ref": "#/entities/PrivateUserInfo" },
+      "description": "Owner-only PII record (email)."
+    },
+    "/globalChat/{messageId}": {
+      "schema": { "$ref": "#/entities/GlobalChatMessage" },
+      "description": "Global lobby survivor chat."
+    },
+    "/rooms/{roomId}": {
+      "schema": { "$ref": "#/entities/GameRoom" },
+      "description": "Multiplayer maze match rooms."
+    },
+    "/rooms/{roomId}/players/{playerId}": {
+      "schema": { "$ref": "#/entities/RoomPlayer" },
+      "description": "Real-time player states in a room."
+    },
+    "/rooms/{roomId}/santa/live": {
+      "schema": { "$ref": "#/entities/SantaLiveState" },
+      "description": "Host-authoritative Evil Santa live transform."
+    },
+    "/rooms/{roomId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/RoomChatMessage" },
+      "description": "In-room chat messages."
+    }
+  }
+}

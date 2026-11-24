@@ -3,17 +3,26 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { HorrorAudio } from './audio';
 import {
   CELL_SIZE,
-  WALL_HEIGHT,
   cellToWorld,
   findNextStepBFS,
   generateMaze,
   hasLineOfSight,
   worldToCell,
 } from './maze';
+import { RemoteSurvivorRig, createRemoteSurvivor } from './playerAvatar';
 import { ExitGateProp, OrnamentProp, createExitGate, createOrnamentProp } from './props';
 import { EvilSantaRig, createEvilSanta } from './santaModel';
 import { ProceduralTextures, createProceduralTextures } from './textures';
-import { DIFFICULTIES, DifficultyId, GamePhase, GridCoord, HudSnapshot, MazeData } from './types';
+import {
+  DIFFICULTIES,
+  DifficultyId,
+  GamePhase,
+  GridCoord,
+  HudSnapshot,
+  MazeData,
+  RoomPlayerData,
+  SantaLiveData,
+} from './types';
 
 // Reusable math objects (zero per-frame GC)
 const _vecForward = new THREE.Vector3();
@@ -27,6 +36,21 @@ const PLAYER_RADIUS = 0.45;
 const EYE_HEIGHT = 1.68;
 const SNOW_COUNT = 850;
 const SNOW_VOLUME = 36;
+
+export interface MultiplayerEngineCallbacks {
+  onLocalPlayerSync?: (state: {
+    x: number;
+    z: number;
+    yaw: number;
+    flashlightOn: boolean;
+    alive: boolean;
+    escaped: boolean;
+  }) => void;
+  onHostSantaSync?: (state: SantaLiveData) => void;
+  onCollectOrnament?: (ornamentId: number) => void;
+  onLocalEliminated?: () => void;
+  onLocalEscaped?: () => void;
+}
 
 export class MazeEngine {
   private container: HTMLElement;
@@ -63,6 +87,20 @@ export class MazeEngine {
   private ornamentsCollected = 0;
   private exitUnlocked = false;
   private elapsedSeconds = 0;
+
+  // Multiplayer State
+  private isMultiplayer = false;
+  private roomId: string | null = null;
+  private isHost = false;
+  private localUid: string | null = null;
+  private alive = true;
+  private spectating = false;
+  private chatOpen = false;
+  private mpCallbacks: MultiplayerEngineCallbacks = {};
+  private remotePlayers = new Map<string, RemoteSurvivorRig>();
+  private remoteSantaTarget: SantaLiveData | null = null;
+  private lastPlayerSyncMs = 0;
+  private lastSantaSyncMs = 0;
 
   // Player kinematics
   private playerPos = new THREE.Vector3(0, EYE_HEIGHT, 0);
@@ -164,7 +202,7 @@ export class MazeEngine {
     this.fog = new THREE.FogExp2(bgHex, DIFFICULTIES[this.difficulty].fogDensity);
     this.scene.fog = this.fog;
 
-    // Mandatory studio environment map for metallic ornaments, brass buckle, and gate iron
+    // Studio environment map for metallic ornaments, brass buckle, and gate iron
     const pmremGenerator = new THREE.PMREMGenerator(this.renderer);
     const envTex = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
     this.scene.environment = envTex;
@@ -172,13 +210,13 @@ export class MazeEngine {
     this.disposables.push(envTex);
     pmremGenerator.dispose();
 
-    this.camera = new THREE.PerspectiveCamera(74, width / height, 0.1, 90);
+    this.camera = new THREE.PerspectiveCamera(74, width / height, 0.1, 145);
     this.camera.rotation.order = 'YXZ';
 
     const maxAniso = this.renderer.capabilities.getMaxAnisotropy();
     this.textures = createProceduralTextures(maxAniso);
 
-    // Warm/cool moonlight rig
+    // Moonlight rig
     const hemi = new THREE.HemisphereLight(0x466396, 0x090c14, 0.58);
     this.scene.add(hemi);
 
@@ -186,7 +224,7 @@ export class MazeEngine {
     moonLight.position.set(18, 32, -14);
     this.scene.add(moonLight);
 
-    // Subtle personal night-vision aura so pitch-black corners stay readable
+    // Subtle personal night-vision aura
     this.playerAmbientGlow = new THREE.PointLight(0x3a4d70, 0.7, 5.5, 1.8);
     this.scene.add(this.playerAmbientGlow);
 
@@ -251,23 +289,27 @@ export class MazeEngine {
     if (this.santa) {
       this.santa.dispose();
     }
+    for (const rig of this.remotePlayers.values()) {
+      rig.dispose();
+    }
+    this.remotePlayers.clear();
     this.ornaments = [];
     this.bulbInstanced = null;
     this.bulbBaseColors = [];
   }
 
-  private buildNewLevel(): void {
+  private buildNewLevel(seed?: number): void {
     this.clearMazeGroup();
 
     const diff = DIFFICULTIES[this.difficulty];
     this.fog.density = diff.fogDensity;
-    this.mazeData = generateMaze(diff.ornamentCount);
+    this.mazeData = generateMaze(diff.ornamentCount, seed);
 
     const { size, cellSize, wallHeight, grid } = this.mazeData;
     const totalSpan = size * cellSize;
 
-    // Extended snow ground plane (far beyond maze perimeter so there is never an empty void)
-    const groundGeo = new THREE.PlaneGeometry(totalSpan + 90, totalSpan + 90);
+    // Extended snow ground plane (far beyond 27x27 maze perimeter)
+    const groundGeo = new THREE.PlaneGeometry(totalSpan + 110, totalSpan + 110);
     const groundMat = new THREE.MeshStandardMaterial({
       map: this.textures.snowFloorColor,
       roughnessMap: this.textures.snowFloorRoughness,
@@ -280,7 +322,7 @@ export class MazeEngine {
     ground.receiveShadow = true;
     this.mazeGroup.add(ground);
 
-    // Count walls for InstancedMesh
+    // Walls (InstancedMesh)
     const wallCoords: GridCoord[] = [];
     for (let r = 0; r < size; r++) {
       for (let c = 0; c < size; c++) {
@@ -315,7 +357,7 @@ export class MazeEngine {
     wallInstanced.computeBoundingSphere();
     this.mazeGroup.add(wallInstanced);
 
-    // String light bulbs along wall edges facing open corridors (InstancedMesh)
+    // String light bulbs along wall edges facing open corridors
     const bulbPositions: THREE.Vector3[] = [];
     const bulbPalette = [
       new THREE.Color(0xff2222),
@@ -333,7 +375,7 @@ export class MazeEngine {
             { dr: 0, dc: 1, ox: cellSize * 0.51, oz: 0 },
           ];
           for (const o of offsets) {
-            if (grid[r + o.dr]?.[c + o.dc] === 0 && Math.random() < 0.45) {
+            if (grid[r + o.dr]?.[c + o.dc] === 0 && (r * 7 + c * 13 + o.dr) % 3 === 0) {
               bulbPositions.push(new THREE.Vector3(x + o.ox, wallHeight * 0.68, z + o.oz));
             }
           }
@@ -361,7 +403,7 @@ export class MazeEngine {
       this.mazeGroup.add(this.bulbInstanced);
     }
 
-    // Spawn 5 Golden Star Ornaments
+    // Spawn Golden Star Ornaments
     this.mazeData.ornaments.forEach((coord, idx) => {
       const { x, z } = cellToWorld(coord.r, coord.c, size, cellSize);
       const prop = createOrnamentProp(
@@ -377,14 +419,10 @@ export class MazeEngine {
       this.mazeGroup.add(prop.group);
     });
 
-    // Spawn Exit Sleigh Gate
+    // Spawn Exit Sleigh Gate at outer perimeter breach
     const exitW = cellToWorld(this.mazeData.exitCell.r, this.mazeData.exitCell.c, size, cellSize);
     this.exitGate = createExitGate(exitW.x, exitW.z, this.textures.candyCaneColor, this.disposables);
-    // Orient gate toward open adjacent corridor if possible
-    const ec = this.mazeData.exitCell;
-    if (grid[ec.r]?.[ec.c - 1] === 0 || grid[ec.r]?.[ec.c + 1] === 0) {
-      this.exitGate.group.rotation.y = Math.PI / 2;
-    }
+    this.exitGate.group.rotation.y = Math.PI / 2;
     this.mazeGroup.add(this.exitGate.group);
 
     // Spawn Evil Santa
@@ -398,7 +436,6 @@ export class MazeEngine {
     const playerW = cellToWorld(this.mazeData.playerSpawn.r, this.mazeData.playerSpawn.c, size, cellSize);
     this.playerPos.set(playerW.x, EYE_HEIGHT, playerW.z);
 
-    // Look down open neighbor cell
     const ps = this.mazeData.playerSpawn;
     if (grid[ps.r]?.[ps.c + 1] === 0) this.yaw = -Math.PI / 2;
     else if (grid[ps.r + 1]?.[ps.c] === 0) this.yaw = Math.PI;
@@ -422,13 +459,198 @@ export class MazeEngine {
     this.chimeAngleDeg = null;
   }
 
+  private unlockExitGateVisuals(): void {
+    this.exitUnlocked = true;
+    if (!this.exitGate) return;
+    this.exitGate.sigilMat.color.setHex(0x22ff99);
+    this.exitGate.sigilMat.emissive.setHex(0x11ee77);
+    this.exitGate.portalMat.color.setHex(0x0b3b2c);
+    this.exitGate.portalMat.emissive.setHex(0x14d88c);
+    this.exitGate.beaconMat.color.setHex(0x22ff99);
+    this.exitGate.beaconMat.opacity = 0.28;
+    this.exitGate.gateLight.color.setHex(0x22ff99);
+  }
+
   public startNewGame(difficulty: DifficultyId): void {
     this.difficulty = difficulty;
+    this.isMultiplayer = false;
+    this.roomId = null;
+    this.isHost = false;
+    this.localUid = null;
+    this.alive = true;
+    this.spectating = false;
+    this.chatOpen = false;
+    this.mpCallbacks = {};
+    this.remoteSantaTarget = null;
+
     this.audio.init();
     this.buildNewLevel();
     this.phase = 'playing';
-    this.showBanner('Collect 5 cursed ornaments to unlock the Exit Gate.');
+    this.showBanner(`Collect ${this.mazeData.ornaments.length} cursed ornaments to unlock the Exit Gate.`);
     this.requestPointerLockSafe();
+    this.pushHud();
+  }
+
+  public enterWaitingRoom(
+    difficulty: DifficultyId,
+    mazeSeed: number,
+    roomId: string,
+    isHost: boolean,
+    localUid: string
+  ): void {
+    this.difficulty = difficulty;
+    this.isMultiplayer = true;
+    this.roomId = roomId;
+    this.isHost = isHost;
+    this.localUid = localUid;
+    this.alive = true;
+    this.spectating = false;
+    this.chatOpen = false;
+    this.remoteSantaTarget = null;
+    this.phase = 'waiting';
+    this.exitPointerLockSafe();
+    this.buildNewLevel(mazeSeed);
+    this.pushHud();
+  }
+
+  public startMultiplayerSession(cfg: {
+    difficulty: DifficultyId;
+    mazeSeed: number;
+    roomId: string;
+    isHost: boolean;
+    localUid: string;
+    callbacks: MultiplayerEngineCallbacks;
+  }): void {
+    this.difficulty = cfg.difficulty;
+    this.isMultiplayer = true;
+    this.roomId = cfg.roomId;
+    this.isHost = cfg.isHost;
+    this.localUid = cfg.localUid;
+    this.alive = true;
+    this.spectating = false;
+    this.chatOpen = false;
+    this.mpCallbacks = cfg.callbacks;
+    this.remoteSantaTarget = null;
+
+    this.audio.init();
+    this.buildNewLevel(cfg.mazeSeed);
+    this.phase = 'playing';
+    this.showBanner(
+      `Team up to collect ${this.mazeData.ornaments.length} ornaments and escape! Press T to chat.`
+    );
+    this.requestPointerLockSafe();
+
+    // Immediately broadcast initial spawn position
+    this.mpCallbacks.onLocalPlayerSync?.({
+      x: this.playerPos.x,
+      z: this.playerPos.z,
+      yaw: this.yaw,
+      flashlightOn: this.flashlightOn,
+      alive: true,
+      escaped: false,
+    });
+    if (this.isHost) {
+      this.mpCallbacks.onHostSantaSync?.({
+        x: this.santaPos.x,
+        z: this.santaPos.z,
+        yaw: this.santaYaw,
+        speed: 0,
+        alerted: false,
+      });
+    }
+    this.pushHud();
+  }
+
+  public applyRemotePlayers(players: RoomPlayerData[]): void {
+    if (!this.isMultiplayer || !this.mazeGroup) return;
+
+    const seen = new Set<string>();
+    for (const p of players) {
+      if (p.uid === this.localUid) continue;
+      seen.add(p.uid);
+
+      let rig = this.remotePlayers.get(p.uid);
+      if (!rig) {
+        const spawnW = this.mazeData
+          ? cellToWorld(this.mazeData.playerSpawn.r, this.mazeData.playerSpawn.c, this.mazeData.size, CELL_SIZE)
+          : { x: 0, z: 0 };
+        const initial: RoomPlayerData =
+          p.x === 0 && p.z === 0 ? { ...p, x: spawnW.x, z: spawnW.z } : p;
+        rig = createRemoteSurvivor(initial, this.textures.contactShadow);
+        this.remotePlayers.set(p.uid, rig);
+        this.mazeGroup.add(rig.root);
+      } else {
+        rig.syncFromData(p);
+      }
+    }
+
+    for (const [uid, rig] of this.remotePlayers.entries()) {
+      if (!seen.has(uid)) {
+        this.mazeGroup.remove(rig.root);
+        rig.dispose();
+        this.remotePlayers.delete(uid);
+      }
+    }
+
+    // If spectating and everyone has fallen or escaped, transition cleanly to caught
+    if (this.phase === 'playing' && !this.alive && this.spectating) {
+      const anyTeammateAlive = Array.from(this.remotePlayers.values()).some((r) => r.alive && !r.escaped);
+      if (!anyTeammateAlive) {
+        this.spectating = false;
+        this.phase = 'caught';
+        this.exitPointerLockSafe();
+        this.pushHud();
+      }
+    }
+  }
+
+  public applyRemoteSantaState(santa: SantaLiveData): void {
+    if (!this.isMultiplayer || this.isHost) return;
+    if (!this.remoteSantaTarget && Math.hypot(santa.x - this.santaPos.x, santa.z - this.santaPos.z) > 12) {
+      this.santaPos.set(santa.x, 0, santa.z);
+      this.santaYaw = santa.yaw;
+    }
+    this.remoteSantaTarget = santa;
+  }
+
+  public applyRoomOrnaments(collectedIds: number[], exitUnlocked: boolean): void {
+    if (!this.isMultiplayer) return;
+    const idSet = new Set(collectedIds);
+    let newlyCollected = false;
+
+    for (const o of this.ornaments) {
+      if (idSet.has(o.id) && !o.collected) {
+        o.collected = true;
+        o.group.visible = false;
+        newlyCollected = true;
+      }
+    }
+
+    const totalCollected = this.ornaments.filter((o) => o.collected).length;
+    if (newlyCollected && totalCollected > this.ornamentsCollected) {
+      this.audio.playOrnamentPickup();
+      if (!exitUnlocked) {
+        const left = this.ornaments.length - totalCollected;
+        this.showBanner(`Teammate recovered an ornament (${totalCollected}/${this.ornaments.length}). ${left} left.`);
+      }
+    }
+    this.ornamentsCollected = totalCollected;
+
+    if (exitUnlocked && !this.exitUnlocked) {
+      this.unlockExitGateVisuals();
+      this.audio.playExitUnlocked();
+      this.showBanner('All ornaments recovered! Follow the EXIT compass to escape!', 6.0);
+    }
+    this.pushHud();
+  }
+
+  public setChatOpen(open: boolean): void {
+    this.chatOpen = open;
+    if (open) {
+      this.keys = {};
+      this.draggingLook = false;
+      this.exitPointerLockSafe();
+    }
     this.pushHud();
   }
 
@@ -444,6 +666,8 @@ export class MazeEngine {
   public pauseGame(): void {
     if (this.phase === 'playing') {
       this.phase = 'paused';
+      this.keys = {};
+      this.draggingLook = false;
       this.exitPointerLockSafe();
       this.pushHud();
     }
@@ -451,6 +675,15 @@ export class MazeEngine {
 
   public returnToMenu(): void {
     this.phase = 'menu';
+    this.isMultiplayer = false;
+    this.roomId = null;
+    this.isHost = false;
+    this.localUid = null;
+    this.alive = true;
+    this.spectating = false;
+    this.chatOpen = false;
+    this.mpCallbacks = {};
+    this.remoteSantaTarget = null;
     this.exitPointerLockSafe();
     this.buildNewLevel();
     this.pushHud();
@@ -470,7 +703,7 @@ export class MazeEngine {
   }
 
   public toggleFlashlight(): void {
-    if (this.phase !== 'playing') return;
+    if (this.phase !== 'playing' || !this.alive) return;
     if (!this.flashlightOn && this.battery <= 4) {
       this.showBanner('Flashlight battery depleted. Wait for recharge.');
       return;
@@ -481,7 +714,7 @@ export class MazeEngine {
   }
 
   public triggerChimeSense(): void {
-    if (this.phase !== 'playing' || this.chimeCooldown > 0) return;
+    if (this.phase !== 'playing' || !this.alive || this.chimeCooldown > 0) return;
     this.chimeCooldown = 5.5;
     this.chimeDisplayTimer = 4.2;
     this.audio.playChimePulse();
@@ -500,6 +733,7 @@ export class MazeEngine {
   }
 
   public requestPointerLockSafe(): void {
+    if (this.chatOpen) return;
     try {
       const canvas = this.renderer?.domElement;
       if (canvas && document.pointerLockElement !== canvas && canvas.requestPointerLock) {
@@ -523,7 +757,16 @@ export class MazeEngine {
     }
   }
 
+  private isTypingInInput(target: EventTarget | null): boolean {
+    if (!target || !(target instanceof HTMLElement)) return false;
+    const tag = target.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable;
+  }
+
   private handleKeyDown = (e: KeyboardEvent) => {
+    if (this.chatOpen || this.isTypingInInput(e.target)) {
+      return;
+    }
     this.keys[e.code] = true;
     if (this.phase === 'playing') {
       if (e.code === 'KeyF') {
@@ -553,7 +796,7 @@ export class MazeEngine {
   };
 
   private handlePointerDown = (e: PointerEvent) => {
-    if (this.phase !== 'playing') return;
+    if (this.phase !== 'playing' || this.chatOpen) return;
     this.audio.init();
     this.draggingLook = true;
     this.lastPointerX = e.clientX;
@@ -564,7 +807,7 @@ export class MazeEngine {
   };
 
   private handlePointerMove = (e: PointerEvent) => {
-    if (this.phase !== 'playing') return;
+    if (this.phase !== 'playing' || this.chatOpen) return;
     const sensitivity = 0.0022;
     if (this.pointerLocked) {
       this.yaw -= e.movementX * sensitivity;
@@ -660,7 +903,6 @@ export class MazeEngine {
             pos.x += (dx / dist) * overlap;
             pos.z += (dz / dist) * overlap;
           } else {
-            // Fallback push out along shortest axis
             const penX = halfWall + radius - Math.abs(pos.x - wx);
             const penZ = halfWall + radius - Math.abs(pos.z - wz);
             if (penX < penZ) {
@@ -684,19 +926,88 @@ export class MazeEngine {
     return { ...this.mazeData.playerSpawn };
   }
 
-  private updateSantaAI(dt: number, nowSec: number, playerSprinting: boolean): number {
+  private updateSantaAI(dt: number, nowSec: number, localSprinting: boolean): number {
+    // Non-host multiplayer clients smoothly interpolate from Host's authoritative Santa
+    if (this.isMultiplayer && !this.isHost) {
+      if (this.remoteSantaTarget) {
+        this.santaPos.x = THREE.MathUtils.damp(this.santaPos.x, this.remoteSantaTarget.x, 9, dt);
+        this.santaPos.z = THREE.MathUtils.damp(this.santaPos.z, this.remoteSantaTarget.z, 9, dt);
+
+        let deltaAngle = this.remoteSantaTarget.yaw - this.santaYaw;
+        while (deltaAngle > Math.PI) deltaAngle -= Math.PI * 2;
+        while (deltaAngle < -Math.PI) deltaAngle += Math.PI * 2;
+        this.santaYaw += deltaAngle * Math.min(1, dt * 9);
+
+        this.santaCurrentSpeed = this.remoteSantaTarget.speed;
+        if (this.remoteSantaTarget.alerted && !this.santaAlerted) {
+          this.audio.playEvilHoHo(0.7);
+        }
+        this.santaAlerted = this.remoteSantaTarget.alerted;
+      }
+      this.santa.root.position.copy(this.santaPos);
+      this.santa.root.rotation.y = this.santaYaw;
+      this.santa.updateAnimation(nowSec, this.santaCurrentSpeed, this.santaAlerted);
+      return Math.hypot(this.playerPos.x - this.santaPos.x, this.playerPos.z - this.santaPos.z);
+    }
+
     const diff = DIFFICULTIES[this.difficulty];
-    const distToPlayer = Math.hypot(this.playerPos.x - this.santaPos.x, this.playerPos.z - this.santaPos.z);
 
-    // Check line of sight and hearing
-    const effectiveSight = this.flashlightOn ? diff.santaSightRange : diff.santaSightRange * 0.64;
-    const canSee =
-      distToPlayer <= effectiveSight &&
-      hasLineOfSight(this.mazeData.grid, this.santaPos.x, this.santaPos.z, this.playerPos.x, this.playerPos.z, CELL_SIZE);
-    const canHear = distToPlayer < (playerSprinting ? 12.5 : 4.5);
+    // Gather all alive survivor targets (local + remote)
+    const candidates: { x: number; z: number; flashlightOn: boolean; sprinting: boolean }[] = [];
+    if (this.alive && !this.spectating) {
+      candidates.push({
+        x: this.playerPos.x,
+        z: this.playerPos.z,
+        flashlightOn: this.flashlightOn,
+        sprinting: localSprinting,
+      });
+    }
+    if (this.isMultiplayer) {
+      for (const rig of this.remotePlayers.values()) {
+        if (rig.alive && !rig.escaped) {
+          candidates.push({
+            x: rig.targetX,
+            z: rig.targetZ,
+            flashlightOn: true,
+            sprinting: false,
+          });
+        }
+      }
+    }
 
-    if (canSee || canHear) {
-      if (!this.santaAlerted && canSee) {
+    let nearestTarget = candidates[0] || {
+      x: this.playerPos.x,
+      z: this.playerPos.z,
+      flashlightOn: false,
+      sprinting: false,
+    };
+    let bestDist = Infinity;
+    let canSeeAny = false;
+    let canHearAny = false;
+
+    for (const c of candidates) {
+      const d = Math.hypot(c.x - this.santaPos.x, c.z - this.santaPos.z);
+      const effSight = c.flashlightOn ? diff.santaSightRange : diff.santaSightRange * 0.64;
+      const sees =
+        d <= effSight &&
+        hasLineOfSight(this.mazeData.grid, this.santaPos.x, this.santaPos.z, c.x, c.z, CELL_SIZE);
+      const hears = d < (c.sprinting ? 12.5 : 4.5);
+
+      if (sees) canSeeAny = true;
+      if (hears) canHearAny = true;
+
+      // Prioritize visible targets, then closest distance
+      const score = sees ? d * 0.65 : d;
+      if (score < bestDist) {
+        bestDist = score;
+        nearestTarget = c;
+      }
+    }
+
+    const distToTarget = Math.hypot(nearestTarget.x - this.santaPos.x, nearestTarget.z - this.santaPos.z);
+
+    if (canSeeAny || canHearAny) {
+      if (!this.santaAlerted && canSeeAny) {
         this.audio.playEvilHoHo(0.85);
       }
       this.santaAlerted = true;
@@ -708,25 +1019,23 @@ export class MazeEngine {
       }
     }
 
-    // Escalate Santa speed with each collected ornament
-    const rageBoost = 1 + this.ornamentsCollected * 0.065;
+    const rageBoost = 1 + this.ornamentsCollected * 0.055;
     const targetSpeed = (this.santaAlerted ? diff.santaChaseSpeed : diff.santaBaseSpeed) * rageBoost;
     this.santaCurrentSpeed = THREE.MathUtils.damp(this.santaCurrentSpeed, targetSpeed, 6, dt);
 
     const santaCell = worldToCell(this.santaPos.x, this.santaPos.z, this.mazeData.size, CELL_SIZE);
-    const playerCell = worldToCell(this.playerPos.x, this.playerPos.z, this.mazeData.size, CELL_SIZE);
+    const targetCell = worldToCell(nearestTarget.x, nearestTarget.z, this.mazeData.size, CELL_SIZE);
 
-    let moveTargetX = this.playerPos.x;
-    let moveTargetZ = this.playerPos.z;
+    let moveTargetX = nearestTarget.x;
+    let moveTargetZ = nearestTarget.z;
 
-    if (canSee && distToPlayer < 12) {
-      // Direct sprint down corridor
-      moveTargetX = this.playerPos.x;
-      moveTargetZ = this.playerPos.z;
+    if (canSeeAny && distToTarget < 12) {
+      moveTargetX = nearestTarget.x;
+      moveTargetZ = nearestTarget.z;
     } else {
       let goalCell: GridCoord;
-      if (this.santaAlerted || this.ornamentsCollected >= 4) {
-        goalCell = playerCell;
+      if (this.santaAlerted || this.ornamentsCollected >= this.mazeData.ornaments.length - 1) {
+        goalCell = targetCell;
       } else {
         if (
           !this.santaPatrolTarget ||
@@ -767,20 +1076,44 @@ export class MazeEngine {
     this.santa.root.rotation.y = this.santaYaw;
     this.santa.updateAnimation(nowSec, this.santaCurrentSpeed, this.santaAlerted);
 
+    if (this.isMultiplayer && this.isHost && performance.now() - this.lastSantaSyncMs > 130) {
+      this.lastSantaSyncMs = performance.now();
+      this.mpCallbacks.onHostSantaSync?.({
+        x: this.santaPos.x,
+        z: this.santaPos.z,
+        yaw: this.santaYaw,
+        speed: this.santaCurrentSpeed,
+        alerted: this.santaAlerted,
+      });
+    }
+
     return Math.hypot(this.playerPos.x - this.santaPos.x, this.playerPos.z - this.santaPos.z);
   }
 
+  private getRelativeAngleDeg(targetX: number, targetZ: number): number {
+    const fwdX = -Math.sin(this.yaw);
+    const fwdZ = -Math.cos(this.yaw);
+    const rightX = -fwdZ;
+    const rightZ = fwdX;
+    const toX = targetX - this.playerPos.x;
+    const toZ = targetZ - this.playerPos.z;
+    const dotFwd = toX * fwdX + toZ * fwdZ;
+    const dotRight = toX * rightX + toZ * rightZ;
+    return THREE.MathUtils.radToDeg(Math.atan2(dotRight, dotFwd));
+  }
+
   private updateChimeBearing(): void {
-    let targetX = 0;
-    let targetZ = 0;
-    let found = false;
+    const playerCell = worldToCell(this.playerPos.x, this.playerPos.z, this.mazeData.size, CELL_SIZE);
+    let goalCell: GridCoord | null = null;
+    let fallbackX = 0;
+    let fallbackZ = 0;
 
     if (this.exitUnlocked) {
-      const ew = cellToWorld(this.mazeData.exitCell.r, this.mazeData.exitCell.c, this.mazeData.size, CELL_SIZE);
-      targetX = ew.x;
-      targetZ = ew.z;
-      this.chimeTargetLabel = 'Exit Gate';
-      found = true;
+      goalCell = this.mazeData.exitCell;
+      const ew = cellToWorld(goalCell.r, goalCell.c, this.mazeData.size, CELL_SIZE);
+      fallbackX = ew.x;
+      fallbackZ = ew.z;
+      this.chimeTargetLabel = 'Exit Gate Path';
     } else {
       let bestDist = Infinity;
       for (const o of this.ornaments) {
@@ -788,30 +1121,26 @@ export class MazeEngine {
         const d = Math.hypot(o.group.position.x - this.playerPos.x, o.group.position.z - this.playerPos.z);
         if (d < bestDist) {
           bestDist = d;
-          targetX = o.group.position.x;
-          targetZ = o.group.position.z;
-          this.chimeTargetLabel = 'Nearest Ornament';
-          found = true;
+          goalCell = { r: o.r, c: o.c };
+          fallbackX = o.group.position.x;
+          fallbackZ = o.group.position.z;
+          this.chimeTargetLabel = 'Ornament Path';
         }
       }
     }
 
-    if (!found) {
+    if (!goalCell) {
       this.chimeAngleDeg = null;
       return;
     }
 
-    // Camera forward vector projected to XZ: (-sin(yaw), -cos(yaw))
-    const fwdX = -Math.sin(this.yaw);
-    const fwdZ = -Math.cos(this.yaw);
-    const toX = targetX - this.playerPos.x;
-    const toZ = targetZ - this.playerPos.z;
-    const angleToTarget = Math.atan2(toX, toZ);
-    const angleFwd = Math.atan2(fwdX, fwdZ);
-    let rel = angleFwd - angleToTarget;
-    while (rel > Math.PI) rel -= Math.PI * 2;
-    while (rel < -Math.PI) rel += Math.PI * 2;
-    this.chimeAngleDeg = THREE.MathUtils.radToDeg(rel);
+    const nextStep = findNextStepBFS(this.mazeData.grid, playerCell, goalCell);
+    if (nextStep && (nextStep.r !== playerCell.r || nextStep.c !== playerCell.c)) {
+      const nw = cellToWorld(nextStep.r, nextStep.c, this.mazeData.size, CELL_SIZE);
+      this.chimeAngleDeg = this.getRelativeAngleDeg(nw.x, nw.z);
+    } else {
+      this.chimeAngleDeg = this.getRelativeAngleDeg(fallbackX, fallbackZ);
+    }
   }
 
   private updateSnow(dt: number): void {
@@ -837,7 +1166,6 @@ export class MazeEngine {
   }
 
   private updateBulbsAndProps(nowSec: number): void {
-    // Animate floating ornaments
     for (const o of this.ornaments) {
       if (o.collected) continue;
       o.starGroup.rotation.y = nowSec * 1.4 + o.id;
@@ -845,7 +1173,6 @@ export class MazeEngine {
       o.light.intensity = 2.2 + Math.sin(nowSec * 3.5 + o.id) * 0.45;
     }
 
-    // Subtle festive string-light shimmer
     if (this.bulbInstanced && this.bulbBaseColors.length > 0) {
       const count = this.bulbBaseColors.length;
       for (let i = 0; i < count; i++) {
@@ -858,7 +1185,6 @@ export class MazeEngine {
       }
     }
 
-    // Exit gate shimmer
     if (this.exitGate) {
       this.exitGate.portalMat.opacity = this.exitUnlocked
         ? 0.65 + Math.sin(nowSec * 5) * 0.15
@@ -877,8 +1203,15 @@ export class MazeEngine {
       }
     }
 
-    // Live Menu Camera Orbit inside the snowy corridor
-    if (this.phase === 'menu') {
+    // Update remote survivor animations whenever in maze
+    if (this.isMultiplayer) {
+      for (const rig of this.remotePlayers.values()) {
+        rig.update(dt, nowSec);
+      }
+    }
+
+    // Live Menu / Waiting Room Corridor Camera Orbit
+    if (this.phase === 'menu' || this.phase === 'waiting') {
       const sway = Math.sin(nowSec * 0.28) * 0.35;
       this.camera.position.set(this.playerPos.x, EYE_HEIGHT + Math.sin(nowSec * 0.8) * 0.04, this.playerPos.z);
       this.camera.rotation.set(0.02, this.yaw + sway, 0, 'YXZ');
@@ -886,14 +1219,17 @@ export class MazeEngine {
       return;
     }
 
-    if (this.phase === 'paused' || this.phase === 'caught' || this.phase === 'escaped') {
+    // In solo mode, pausing freezes simulation; in multiplayer, world continues while menu is open
+    if (this.phase === 'caught' || this.phase === 'escaped') {
+      return;
+    }
+    if (this.phase === 'paused' && !this.isMultiplayer) {
       return;
     }
 
-    // Jumpscare sequence before showing Game Over
+    // Jumpscare sequence before elimination or spectating
     if (this.jumpscareActive) {
       this.jumpscareTimer -= dt;
-      // Lock camera onto Evil Santa's glowing eyes with violent shake
       const lookY = 2.15;
       this.camera.position.set(
         this.playerPos.x + (Math.random() - 0.5) * 0.14,
@@ -907,6 +1243,30 @@ export class MazeEngine {
 
       if (this.jumpscareTimer <= 0) {
         this.jumpscareActive = false;
+        this.alive = false;
+        this.flashlightOn = false;
+
+        if (this.isMultiplayer) {
+          this.mpCallbacks.onLocalPlayerSync?.({
+            x: this.playerPos.x,
+            z: this.playerPos.z,
+            yaw: this.yaw,
+            flashlightOn: false,
+            alive: false,
+            escaped: false,
+          });
+          this.mpCallbacks.onLocalEliminated?.();
+
+          const anyTeammateAlive = Array.from(this.remotePlayers.values()).some((r) => r.alive && !r.escaped);
+          if (anyTeammateAlive) {
+            this.spectating = true;
+            this.phase = 'playing';
+            this.showBanner('Santa caught you! Spectating surviving teammates...', 5.0);
+            this.pushHud();
+            return;
+          }
+        }
+
         this.phase = 'caught';
         this.exitPointerLockSafe();
         this.pushHud();
@@ -923,32 +1283,59 @@ export class MazeEngine {
       else this.chimeAngleDeg = null;
     }
 
+    const controlsActive = this.phase === 'playing' && !this.chatOpen;
+
     // Keyboard turn fallback (Q/E or Left/Right Arrows)
-    const turnSpeed = 2.15;
-    if (this.keys['KeyQ'] || this.keys['ArrowLeft']) this.yaw += turnSpeed * dt;
-    if (this.keys['KeyE'] || this.keys['ArrowRight']) this.yaw -= turnSpeed * dt;
+    if (controlsActive) {
+      const turnSpeed = 2.15;
+      if (this.keys['KeyQ'] || this.keys['ArrowLeft']) this.yaw += turnSpeed * dt;
+      if (this.keys['KeyE'] || this.keys['ArrowRight']) this.yaw -= turnSpeed * dt;
+    }
 
     // Movement vector
     let forwardInput = 0;
     let strafeInput = 0;
-    if (this.keys['KeyW'] || this.keys['ArrowUp']) forwardInput += 1;
-    if (this.keys['KeyS'] || this.keys['ArrowDown']) forwardInput -= 1;
-    if (this.keys['KeyD']) strafeInput += 1;
-    if (this.keys['KeyA']) strafeInput -= 1;
-
-    const wantsMove = forwardInput !== 0 || strafeInput !== 0;
-    const wantsSprint = (this.keys['ShiftLeft'] || this.keys['ShiftRight']) && wantsMove && this.stamina > 2;
-    const sprinting = wantsSprint;
-
-    if (sprinting) {
-      this.stamina = Math.max(0, this.stamina - 24 * dt);
-    } else {
-      this.stamina = Math.min(100, this.stamina + (wantsMove ? 11 : 18) * dt);
+    if (controlsActive) {
+      if (this.keys['KeyW'] || this.keys['ArrowUp']) forwardInput += 1;
+      if (this.keys['KeyS'] || this.keys['ArrowDown']) forwardInput -= 1;
+      if (this.keys['KeyD']) strafeInput += 1;
+      if (this.keys['KeyA']) strafeInput -= 1;
     }
 
-    const moveSpeed = sprinting ? 6.45 : 3.95;
+    const wantsMove = forwardInput !== 0 || strafeInput !== 0;
+    const wantsSprint =
+      controlsActive && (this.keys['ShiftLeft'] || this.keys['ShiftRight']) && wantsMove && this.stamina > 2;
+    const sprinting = wantsSprint && !this.spectating;
 
-    if (wantsMove) {
+    // Tuned stamina: ~10.5s continuous sprint, rapid recharge
+    if (sprinting) {
+      this.stamina = Math.max(0, this.stamina - 9.5 * dt);
+    } else {
+      this.stamina = Math.min(100, this.stamina + (wantsMove ? 16 : 26) * dt);
+    }
+
+    if (this.spectating) {
+      // Spectator free-roam glide above maze or follow alive teammate
+      if (wantsMove) {
+        _vecForward.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
+        _vecRight.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
+        _vecMove
+          .set(0, 0, 0)
+          .addScaledVector(_vecForward, forwardInput)
+          .addScaledVector(_vecRight, strafeInput)
+          .normalize()
+          .multiplyScalar(7.5 * dt);
+        this.playerPos.x += _vecMove.x;
+        this.playerPos.z += _vecMove.z;
+      } else {
+        const aliveTeammate = Array.from(this.remotePlayers.values()).find((r) => r.alive && !r.escaped);
+        if (aliveTeammate) {
+          this.playerPos.x = THREE.MathUtils.damp(this.playerPos.x, aliveTeammate.root.position.x, 4, dt);
+          this.playerPos.z = THREE.MathUtils.damp(this.playerPos.z, aliveTeammate.root.position.z, 4, dt);
+        }
+      }
+    } else if (wantsMove) {
+      const moveSpeed = sprinting ? 6.55 : 4.05;
       _vecForward.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
       _vecRight.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
       _vecMove
@@ -965,6 +1352,40 @@ export class MazeEngine {
       this.walkBobPhase += dt * (sprinting ? 14 : 9.5);
     }
 
+    // Prevent walking through locked Exit Gate barrier at east perimeter
+    if (!this.spectating && !this.exitUnlocked && this.exitGate) {
+      const gateX = this.exitGate.group.position.x;
+      const gateZ = this.exitGate.group.position.z;
+      if (Math.abs(this.playerPos.z - gateZ) < CELL_SIZE * 0.7 && this.playerPos.x > gateX - 0.9) {
+        this.playerPos.x = gateX - 0.9;
+        if (!this.statusBanner) {
+          this.showBanner(
+            `Exit Gate sealed — recover all ${this.mazeData.ornaments.length} ornaments (${this.ornamentsCollected}/${this.mazeData.ornaments.length}).`,
+            2.6
+          );
+        }
+      }
+    }
+
+    // Update Evil Santa AI
+    const santaDist = this.updateSantaAI(dt, nowSec, sprinting);
+
+    // Subtle camera micro-tremor when Evil Santa stomps close
+    let tremorX = 0;
+    let tremorY = 0;
+    if (!this.spectating && santaDist < 12) {
+      const strength = Math.pow(1 - santaDist / 12, 2) * 0.028;
+      const stompPulse = Math.max(0, Math.sin(nowSec * (this.santaAlerted ? 9.5 : 5.4)));
+      tremorX = (Math.random() - 0.5) * strength * stompPulse;
+      tremorY = (Math.random() - 0.5) * strength * stompPulse;
+    }
+
+    const camEyeY = this.spectating ? 3.25 : EYE_HEIGHT;
+    const bobOffset = !this.spectating && wantsMove ? Math.sin(this.walkBobPhase) * (sprinting ? 0.065 : 0.038) : 0;
+    this.camera.position.set(this.playerPos.x + tremorX, camEyeY + bobOffset + tremorY, this.playerPos.z);
+    this.camera.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
+    this.playerAmbientGlow.position.set(this.playerPos.x, camEyeY, this.playerPos.z);
+
     // Smooth FOV widening when sprinting
     const targetFov = sprinting ? 81 : 74;
     if (Math.abs(this.currentFov - targetFov) > 0.05) {
@@ -973,82 +1394,109 @@ export class MazeEngine {
       this.camera.updateProjectionMatrix();
     }
 
-    // Apply camera position + head-bob
-    const bobOffset = wantsMove ? Math.sin(this.walkBobPhase) * (sprinting ? 0.065 : 0.038) : 0;
-    this.camera.position.set(this.playerPos.x, EYE_HEIGHT + bobOffset, this.playerPos.z);
-    this.camera.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
-    this.playerAmbientGlow.position.set(this.playerPos.x, EYE_HEIGHT, this.playerPos.z);
-
     // Flashlight battery & horror flicker
-    if (this.flashlightOn) {
-      this.battery = Math.max(0, this.battery - 1.55 * dt);
+    if (this.flashlightOn && this.alive) {
+      this.battery = Math.max(0, this.battery - 1.35 * dt);
       if (this.battery <= 0) {
         this.flashlightOn = false;
         this.audio.playFlashlightClick();
         this.showBanner('Flashlight battery drained!');
       }
     } else {
-      this.battery = Math.min(100, this.battery + 3.8 * dt);
+      this.battery = Math.min(100, this.battery + 4.4 * dt);
     }
 
-    // Update Evil Santa AI
-    const santaDist = this.updateSantaAI(dt, nowSec, sprinting);
-    this.updateFlashlightTransform(nowSec, santaDist);
+    this.updateFlashlightTransform(nowSec, this.spectating ? 999 : santaDist);
 
     // Spatial Horror Audio
-    this.audio.updateAmbience(nowSec, santaDist, this.santaAlerted, wantsMove, sprinting);
+    this.audio.updateAmbience(
+      nowSec,
+      this.spectating ? 30 : santaDist,
+      this.santaAlerted,
+      !this.spectating && wantsMove,
+      sprinting
+    );
 
-    // Check Ornament Pickups
-    for (const o of this.ornaments) {
-      if (o.collected) continue;
-      const d = Math.hypot(o.group.position.x - this.playerPos.x, o.group.position.z - this.playerPos.z);
-      if (d < 1.35) {
-        o.collected = true;
-        o.group.visible = false;
-        this.ornamentsCollected++;
-        this.battery = Math.min(100, this.battery + 22);
-        this.audio.playOrnamentPickup();
+    if (this.alive && !this.spectating) {
+      // Check Ornament Pickups
+      for (const o of this.ornaments) {
+        if (o.collected) continue;
+        const d = Math.hypot(o.group.position.x - this.playerPos.x, o.group.position.z - this.playerPos.z);
+        if (d < 1.35) {
+          o.collected = true;
+          o.group.visible = false;
+          this.ornamentsCollected++;
+          this.battery = Math.min(100, this.battery + 25);
+          this.stamina = Math.min(100, this.stamina + 35);
+          this.audio.playOrnamentPickup();
 
-        if (this.ornamentsCollected >= this.mazeData.ornaments.length) {
-          this.exitUnlocked = true;
-          this.exitGate.sigilMat.color.setHex(0x22ff99);
-          this.exitGate.sigilMat.emissive.setHex(0x11ee77);
-          this.exitGate.portalMat.color.setHex(0x0b3b2c);
-          this.exitGate.portalMat.emissive.setHex(0x14d88c);
-          this.exitGate.gateLight.color.setHex(0x22ff99);
-          this.audio.playExitUnlocked();
-          this.showBanner('All 5 ornaments recovered! Reach the glowing green Exit Gate!', 6.0);
-        } else {
-          const left = this.mazeData.ornaments.length - this.ornamentsCollected;
-          this.showBanner(`Ornament recovered (${this.ornamentsCollected}/${this.mazeData.ornaments.length}). ${left} remaining.`);
+          if (this.isMultiplayer) {
+            this.mpCallbacks.onCollectOrnament?.(o.id);
+          }
+
+          if (this.ornamentsCollected >= this.mazeData.ornaments.length) {
+            this.unlockExitGateVisuals();
+            this.audio.playExitUnlocked();
+            this.showBanner(
+              `All ${this.mazeData.ornaments.length} ornaments recovered! Follow the EXIT compass to escape!`,
+              6.0
+            );
+          } else {
+            const left = this.mazeData.ornaments.length - this.ornamentsCollected;
+            this.showBanner(`Ornament recovered (${this.ornamentsCollected}/${this.mazeData.ornaments.length}). ${left} remaining.`);
+          }
         }
       }
-    }
 
-    // Check Exit Gate Victory
-    if (this.exitUnlocked) {
-      const distExit = Math.hypot(
-        this.exitGate.group.position.x - this.playerPos.x,
-        this.exitGate.group.position.z - this.playerPos.z
-      );
-      if (distExit < 1.6) {
-        this.phase = 'escaped';
-        this.audio.playVictory();
-        this.exitPointerLockSafe();
-        this.pushHud(santaDist);
+      // Check Exit Gate Victory
+      if (this.exitUnlocked) {
+        const distExit = Math.hypot(
+          this.exitGate.group.position.x - this.playerPos.x,
+          this.exitGate.group.position.z - this.playerPos.z
+        );
+        if (distExit < 1.8 || this.playerPos.x >= this.exitGate.group.position.x - 0.3) {
+          this.phase = 'escaped';
+          this.audio.playVictory();
+          this.exitPointerLockSafe();
+          if (this.isMultiplayer) {
+            this.mpCallbacks.onLocalPlayerSync?.({
+              x: this.playerPos.x,
+              z: this.playerPos.z,
+              yaw: this.yaw,
+              flashlightOn: this.flashlightOn,
+              alive: true,
+              escaped: true,
+            });
+            this.mpCallbacks.onLocalEscaped?.();
+          }
+          this.pushHud(santaDist);
+          return;
+        }
+      }
+
+      // Check Santa Catch -> Jumpscare!
+      if (santaDist < 1.28) {
+        this.jumpscareActive = true;
+        this.jumpscareTimer = 0.68;
+        this.audio.playJumpscare();
         return;
       }
     }
 
-    // Check Santa Catch -> Jumpscare!
-    if (santaDist < 1.28) {
-      this.jumpscareActive = true;
-      this.jumpscareTimer = 0.68;
-      this.audio.playJumpscare();
-      return;
+    // Periodic multiplayer player state broadcast
+    if (this.isMultiplayer && performance.now() - this.lastPlayerSyncMs > 120) {
+      this.lastPlayerSyncMs = performance.now();
+      this.mpCallbacks.onLocalPlayerSync?.({
+        x: this.playerPos.x,
+        z: this.playerPos.z,
+        yaw: this.yaw,
+        flashlightOn: this.flashlightOn,
+        alive: this.alive,
+        escaped: false,
+      });
     }
 
-    // Throttled HUD update (~15fps is crisp for meters without spamming React renders)
+    // Throttled HUD update
     if (performance.now() - this.lastHudPushMs > 65) {
       this.pushHud(santaDist);
     }
@@ -1061,8 +1509,13 @@ export class MazeEngine {
     _vecTarget.copy(this.camera.position).addScaledVector(_vecForward, 8);
     this.flashlightTarget.position.copy(_vecTarget);
 
-    if (!this.flashlightOn) {
+    if (!this.flashlightOn && !this.spectating) {
       this.flashlight.intensity = 0;
+      return;
+    }
+
+    if (this.spectating) {
+      this.flashlight.intensity = 4.0;
       return;
     }
 
@@ -1070,7 +1523,6 @@ export class MazeEngine {
     if (this.battery < 18) {
       baseIntensity *= 0.55 + (this.battery / 18) * 0.45;
     }
-    // Horror flicker when Evil Santa gets close
     if (santaDist < 12) {
       const proximity = 1 - santaDist / 12;
       const glitch = Math.sin(nowSec * 37) * Math.cos(nowSec * 23);
@@ -1089,18 +1541,55 @@ export class MazeEngine {
         ? Math.hypot(this.playerPos.x - this.santaPos.x, this.playerPos.z - this.santaPos.z)
         : 99);
 
+    const santaAngleDeg = this.santaPos
+      ? this.getRelativeAngleDeg(this.santaPos.x, this.santaPos.z)
+      : 0;
+
+    const fwdX = -Math.sin(this.yaw);
+    const fwdZ = -Math.cos(this.yaw);
+    const rawHeading = THREE.MathUtils.radToDeg(Math.atan2(fwdX, -fwdZ));
+    const playerHeadingDeg = (rawHeading + 360) % 360;
+
+    let exitAngleDeg = 0;
+    let exitDistance = 0;
+    if (this.exitGate) {
+      const gx = this.exitGate.group.position.x;
+      const gz = this.exitGate.group.position.z;
+      exitAngleDeg = this.getRelativeAngleDeg(gx, gz);
+      exitDistance = Math.hypot(gx - this.playerPos.x, gz - this.playerPos.z);
+    }
+
+    let nearestOrnamentAngleDeg: number | null = null;
+    let nearestOrnamentDistance: number | null = null;
+    let bestOrnDist = Infinity;
+    for (const o of this.ornaments) {
+      if (o.collected) continue;
+      const d = Math.hypot(o.group.position.x - this.playerPos.x, o.group.position.z - this.playerPos.z);
+      if (d < bestOrnDist) {
+        bestOrnDist = d;
+        nearestOrnamentDistance = d;
+        nearestOrnamentAngleDeg = this.getRelativeAngleDeg(o.group.position.x, o.group.position.z);
+      }
+    }
+
     this.onHudUpdate({
       phase: this.phase,
       difficulty: this.difficulty,
       ornamentsCollected: this.ornamentsCollected,
-      ornamentsTotal: this.mazeData ? this.mazeData.ornaments.length : 5,
+      ornamentsTotal: this.mazeData ? this.mazeData.ornaments.length : DIFFICULTIES[this.difficulty].ornamentCount,
       exitUnlocked: this.exitUnlocked,
       stamina: this.stamina,
       battery: this.battery,
       flashlightOn: this.flashlightOn,
       elapsedSeconds: this.elapsedSeconds,
       santaDistance: santaDist,
+      santaAngleDeg,
       santaAlerted: this.santaAlerted,
+      playerHeadingDeg,
+      exitAngleDeg,
+      exitDistance,
+      nearestOrnamentAngleDeg,
+      nearestOrnamentDistance,
       pointerLocked: this.pointerLocked,
       chimeCooldown: this.chimeCooldown,
       chimeAngleDeg: this.chimeAngleDeg,
@@ -1109,6 +1598,12 @@ export class MazeEngine {
       muted: this.audio.isMuted(),
       hudHidden: this.hudHidden,
       webglError: null,
+      isMultiplayer: this.isMultiplayer,
+      roomId: this.roomId,
+      isHost: this.isHost,
+      alive: this.alive,
+      spectating: this.spectating,
+      chatOpen: this.chatOpen,
       ...overrides,
     });
   }
