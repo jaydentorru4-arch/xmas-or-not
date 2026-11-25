@@ -174,12 +174,12 @@ export const MazeMap: React.FC<MazeMapProps> = ({
   return (
     <>
       {/* Corner Minimap */}
-      <div className="pointer-events-auto fixed top-16 right-5 flex flex-col bg-[#060913]/92 border border-white/15 rounded-lg overflow-hidden">
+      <div className="pointer-events-auto fixed top-14 sm:top-16 right-3 sm:right-5 z-20 flex flex-col bg-[#060913]/92 border border-white/15 rounded-lg overflow-hidden">
         <button
           type="button"
           onClick={onToggleExpanded}
           title="Expand Tactical Map (Tab)"
-          className="flex items-center justify-between px-2.5 py-1 text-[11px] font-medium text-slate-200 border-b border-white/10 hover:bg-white/5 transition-colors cursor-pointer"
+          className="flex items-center justify-between px-2 sm:px-2.5 py-1 text-[10px] sm:text-[11px] font-medium text-slate-200 border-b border-white/10 hover:bg-white/5 transition-colors cursor-pointer"
         >
           <span>Map · Lv {level}</span>
           {expanded ? <Minimize2 className="w-3 h-3 text-slate-400" /> : <Maximize2 className="w-3 h-3 text-slate-400" />}
@@ -188,20 +188,20 @@ export const MazeMap: React.FC<MazeMapProps> = ({
           type="button"
           onClick={onToggleExpanded}
           aria-label="Open full maze map"
-          className="block p-1.5 cursor-pointer"
+          className="block p-1 sm:p-1.5 cursor-pointer"
         >
-          <canvas ref={miniRef} className="w-[148px] h-[148px] rounded-sm block" />
+          <canvas ref={miniRef} className="w-[92px] h-[92px] sm:w-[148px] sm:h-[148px] rounded-sm block" />
         </button>
-        <div className="px-2 pb-1.5 flex items-center justify-between text-[10px] text-slate-400">
+        <div className="px-1.5 sm:px-2 pb-1 sm:pb-1.5 flex items-center justify-between text-[9px] sm:text-[10px] text-slate-400">
           <span className="flex items-center gap-1">
-            <span className="inline-block w-2 h-2 rounded-full bg-red-500" />
+            <span className="inline-block w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-red-500" />
             Santa
           </span>
           <span className="flex items-center gap-1">
-            <span className="inline-block w-2 h-2 rounded-xs bg-emerald-400" />
+            <span className="inline-block w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-xs bg-emerald-400" />
             Exit
           </span>
-          <span className="text-slate-500">Tab</span>
+          <span className="hidden sm:inline text-slate-500">Tab</span>
         </div>
       </div>
 

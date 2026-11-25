@@ -7,16 +7,19 @@ import {
   LogIn,
   LogOut,
   MessageSquare,
+  Monitor,
   Palette,
   Play,
   Plus,
   Send,
   Shield,
+  Smartphone,
   UserCheck,
   UserPlus,
   Users,
   X,
 } from 'lucide-react';
+import type { ControlScheme } from '../utils/deviceDetection';
 import {
   COAT_COLORS,
   ChatMessageData,
@@ -46,6 +49,10 @@ interface MenuOverlaysProps {
   onStartSolo: (levelOverride?: number) => void;
   onResume: () => void;
   onReturnMenu: () => void;
+  isMobileDevice: boolean;
+  showMobileControls: boolean;
+  controlScheme: ControlScheme;
+  onSetControlScheme: (scheme: ControlScheme) => void;
 
   // Auth & Account
   authLoading: boolean;
@@ -182,6 +189,10 @@ export const MenuOverlays: React.FC<MenuOverlaysProps> = ({
   onStartSolo,
   onResume,
   onReturnMenu,
+  isMobileDevice,
+  showMobileControls,
+  controlScheme,
+  onSetControlScheme,
   authLoading,
   authError,
   profile,
@@ -364,10 +375,10 @@ export const MenuOverlays: React.FC<MenuOverlaysProps> = ({
 
   if (hud.phase === 'menu') {
     return (
-      <div className="fixed inset-0 z-20 flex items-center justify-center bg-gradient-to-t from-[#050811]/92 via-[#050811]/72 to-[#050811]/80 px-4 sm:px-6 py-6 overflow-y-auto">
-        <div className="max-w-5xl w-full grid grid-cols-1 lg:grid-cols-12 gap-5 my-auto">
+      <div className="fixed inset-0 z-20 flex items-start sm:items-center justify-center bg-gradient-to-t from-[#050811]/92 via-[#050811]/72 to-[#050811]/80 px-3 sm:px-6 py-4 sm:py-6 overflow-y-auto touch-pan-y">
+        <div className="max-w-5xl w-full grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-5 my-auto">
           {/* Left Panel: Solo Entry, Level Progression & Difficulty */}
-          <div className="lg:col-span-5 bg-[#080d1a]/95 border border-white/15 rounded-xl p-6 sm:p-7 flex flex-col justify-between">
+          <div className="lg:col-span-5 bg-[#080d1a]/95 border border-white/15 rounded-xl p-5 sm:p-7 flex flex-col justify-between">
             <div>
               <p className="text-xs font-medium tracking-wide text-red-400 mb-1.5">
                 First-Person Labyrinth Survival
@@ -473,23 +484,64 @@ export const MenuOverlays: React.FC<MenuOverlaysProps> = ({
               </button>
             </div>
 
-            <div className="mt-5 pt-3.5 border-t border-white/10 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-slate-400">
-              <span>WASD Move</span>
-              <span aria-hidden="true">·</span>
-              <span>Space Dodge</span>
-              <span aria-hidden="true">·</span>
-              <span>Click/G Weapon</span>
-              <span aria-hidden="true">·</span>
-              <span>F Light</span>
-              <span aria-hidden="true">·</span>
-              <span>C Chime Trail</span>
-              <span aria-hidden="true">·</span>
-              <span>Tab Map</span>
+            <div className="mt-5 pt-3.5 border-t border-white/10 flex flex-col gap-2.5 text-xs text-slate-400">
+              <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+                {showMobileControls ? (
+                  <>
+                    <span>Left Stick Move</span>
+                    <span aria-hidden="true">·</span>
+                    <span>Drag Screen Look</span>
+                    <span aria-hidden="true">·</span>
+                    <span>Tap Buttons Act</span>
+                  </>
+                ) : (
+                  <>
+                    <span>WASD Move</span>
+                    <span aria-hidden="true">·</span>
+                    <span>Space Dodge</span>
+                    <span aria-hidden="true">·</span>
+                    <span>Click/G Weapon</span>
+                    <span aria-hidden="true">·</span>
+                    <span>F Light</span>
+                    <span aria-hidden="true">·</span>
+                    <span>C Chime Trail</span>
+                    <span aria-hidden="true">·</span>
+                    <span>Tab Map</span>
+                  </>
+                )}
+              </div>
+
+              <div className="flex items-center justify-between gap-2 pt-1">
+                <span className="inline-flex items-center gap-1.5 text-[11px] text-slate-300">
+                  {isMobileDevice ? (
+                    <Smartphone className="w-3.5 h-3.5 text-emerald-400" />
+                  ) : (
+                    <Monitor className="w-3.5 h-3.5 text-sky-400" />
+                  )}
+                  <span>Detected: {isMobileDevice ? 'Mobile / Touch' : 'Desktop'}</span>
+                </span>
+                <div className="flex items-center gap-1 bg-[#050811] border border-white/10 rounded-md p-0.5 text-[11px]">
+                  {(['auto', 'mobile', 'desktop'] as ControlScheme[]).map((scheme) => (
+                    <button
+                      key={scheme}
+                      type="button"
+                      onClick={() => onSetControlScheme(scheme)}
+                      className={`px-2 py-0.5 rounded capitalize transition-colors cursor-pointer ${
+                        controlScheme === scheme
+                          ? 'bg-red-700 text-white font-medium'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      {scheme}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
 
           {/* Right Panel: Account, Customize, Friends & Online Co-op */}
-          <div className="lg:col-span-7 bg-[#080d1a]/95 border border-white/15 rounded-xl p-6 sm:p-7 flex flex-col gap-4">
+          <div className="lg:col-span-7 bg-[#080d1a]/95 border border-white/15 rounded-xl p-5 sm:p-7 flex flex-col gap-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="text-lg font-semibold text-slate-100">
@@ -1032,8 +1084,8 @@ export const MenuOverlays: React.FC<MenuOverlaysProps> = ({
   if (hud.phase === 'waiting' && activeRoom) {
     const roomScaling = getLevelScaling(activeRoom.level, activeRoom.difficulty);
     return (
-      <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#050811]/86 px-4 sm:px-6 py-6 overflow-y-auto">
-        <div className="max-w-3xl w-full bg-[#080d1a]/96 border border-white/15 rounded-xl p-6 sm:p-8 flex flex-col gap-6 my-auto">
+      <div className="fixed inset-0 z-20 flex items-start sm:items-center justify-center bg-[#050811]/86 px-3 sm:px-6 py-4 sm:py-6 overflow-y-auto touch-pan-y">
+        <div className="max-w-3xl w-full bg-[#080d1a]/96 border border-white/15 rounded-xl p-5 sm:p-8 flex flex-col gap-5 sm:gap-6 my-auto">
           <div className="flex flex-wrap items-start justify-between gap-4 border-b border-white/10 pb-4">
             <div>
               <p className="text-xs font-medium text-red-400 mb-1">Online Staging Lobby</p>
@@ -1183,15 +1235,36 @@ export const MenuOverlays: React.FC<MenuOverlaysProps> = ({
 
   if (hud.phase === 'paused') {
     return (
-      <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#050811]/82 px-6">
-        <div className="max-w-sm w-full bg-[#080d1a]/96 border border-white/15 rounded-xl p-8 text-center">
+      <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#050811]/82 px-4 sm:px-6 overflow-y-auto touch-pan-y">
+        <div className="max-w-sm w-full bg-[#080d1a]/96 border border-white/15 rounded-xl p-6 sm:p-8 text-center my-auto">
           <h2 className="font-display text-3xl font-bold text-slate-100 mb-2">
             {hud.isMultiplayer ? 'Match Menu' : 'Paused'}
           </h2>
-          <p className="text-sm text-slate-400 mb-6">
+          <p className="text-sm text-slate-400 mb-5">
             Level {hud.level} · Ornaments {hud.ornamentsCollected} / {hud.ornamentsTotal} ·{' '}
             {formatTime(hud.elapsedSeconds)}
           </p>
+
+          <div className="mb-5 bg-[#050811]/90 border border-white/10 rounded-lg p-2.5 flex items-center justify-between gap-2 text-xs">
+            <span className="text-slate-300">Controls</span>
+            <div className="flex items-center gap-1 bg-[#0b1120] border border-white/10 rounded-md p-0.5 text-[11px]">
+              {(['auto', 'mobile', 'desktop'] as ControlScheme[]).map((scheme) => (
+                <button
+                  key={scheme}
+                  type="button"
+                  onClick={() => onSetControlScheme(scheme)}
+                  className={`px-2 py-0.5 rounded capitalize transition-colors cursor-pointer ${
+                    controlScheme === scheme
+                      ? 'bg-red-700 text-white font-medium'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  {scheme}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="flex flex-col gap-3">
             <button
               type="button"

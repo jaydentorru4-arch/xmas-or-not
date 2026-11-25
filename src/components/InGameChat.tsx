@@ -5,6 +5,7 @@ import { ChatMessageData } from '../game/types';
 interface InGameChatProps {
   visible: boolean;
   chatOpen: boolean;
+  showMobileControls?: boolean;
   messages: ChatMessageData[];
   onSetChatOpen: (open: boolean) => void;
   onSendMessage: (text: string) => Promise<void> | void;
@@ -13,6 +14,7 @@ interface InGameChatProps {
 export const InGameChat: React.FC<InGameChatProps> = ({
   visible,
   chatOpen,
+  showMobileControls = false,
   messages,
   onSetChatOpen,
   onSendMessage,
@@ -37,7 +39,7 @@ export const InGameChat: React.FC<InGameChatProps> = ({
 
   if (!visible) return null;
 
-  const displayed = chatOpen ? messages.slice(-24) : messages.slice(-4);
+  const displayed = chatOpen ? messages.slice(-24) : messages.slice(-3);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -52,15 +54,21 @@ export const InGameChat: React.FC<InGameChatProps> = ({
     }
   };
 
+  const containerClass = showMobileControls
+    ? chatOpen
+      ? 'fixed top-16 left-1/2 -translate-x-1/2 z-30 w-[92vw] max-w-sm pointer-events-none flex flex-col gap-1.5'
+      : 'fixed top-32 left-3 z-15 w-56 max-w-[55vw] pointer-events-none flex flex-col gap-1'
+    : 'fixed bottom-24 left-4 lg:bottom-5 lg:left-5 z-20 w-72 sm:w-80 max-w-[calc(100vw-2rem)] pointer-events-none flex flex-col gap-1.5';
+
   return (
-    <div className="fixed bottom-24 left-4 lg:bottom-5 lg:left-5 z-20 w-72 sm:w-80 max-w-[calc(100vw-2rem)] pointer-events-none flex flex-col gap-1.5">
+    <div className={containerClass}>
       {(displayed.length > 0 || chatOpen) && (
         <div
           ref={scrollRef}
-          className={`flex flex-col gap-1.5 rounded-xl px-3 py-2.5 text-xs border transition-colors ${
+          className={`flex flex-col gap-1.5 rounded-xl px-3 py-2 text-xs border transition-colors ${
             chatOpen
-              ? 'pointer-events-auto bg-[#060913]/94 border-white/20 max-h-52 overflow-y-auto'
-              : 'bg-[#060913]/78 border-white/10 max-h-36 overflow-hidden'
+              ? 'pointer-events-auto bg-[#060913]/95 border-white/20 max-h-48 overflow-y-auto'
+              : 'bg-[#060913]/75 border-white/10 max-h-28 overflow-hidden'
           }`}
         >
           {displayed.length === 0 ? (
@@ -118,7 +126,7 @@ export const InGameChat: React.FC<InGameChatProps> = ({
             <X className="w-3.5 h-3.5" />
           </button>
         </form>
-      ) : (
+      ) : !showMobileControls ? (
         <button
           type="button"
           onClick={() => onSetChatOpen(true)}
@@ -127,7 +135,7 @@ export const InGameChat: React.FC<InGameChatProps> = ({
           <MessageSquare className="w-3 h-3" />
           <span>Chat (T)</span>
         </button>
-      )}
+      ) : null}
     </div>
   );
 };

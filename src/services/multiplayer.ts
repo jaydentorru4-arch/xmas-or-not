@@ -134,7 +134,8 @@ export async function loadOrCreateSurvivorProfile(user: User): Promise<SurvivorP
       });
     }
   } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, privatePath);
+    // Gracefully absorb quota or permission errors for non-essential private logs
+    console.warn('Non-critical private profile log ignored:', error);
   }
 
   // Load or initialize public survivor profile
@@ -221,6 +222,18 @@ export async function loadOrCreateSurvivorProfile(user: User): Promise<SurvivorP
     };
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, publicPath);
+    return {
+      uid: user.uid,
+      displayName: sanitizeDisplayName(user.displayName || 'Survivor'),
+      coatColor: COAT_COLORS[0].hex,
+      scarfColor: SCARF_COLORS[0].hex,
+      hatStyle: 'hood',
+      friendCode: deriveFriendCode(user.uid),
+      level: 1,
+      xp: 0,
+      escapes: 0,
+      gamesPlayed: 0,
+    };
   }
 }
 
@@ -264,6 +277,18 @@ export async function updateSurvivorAccount(
     };
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
+    return {
+      uid,
+      displayName: cleanName,
+      coatColor: cleanCoat,
+      scarfColor: cleanScarf,
+      hatStyle: cleanHat,
+      friendCode: deriveFriendCode(uid),
+      level: 1,
+      xp: 0,
+      escapes: 0,
+      gamesPlayed: 0,
+    };
   }
 }
 
@@ -299,6 +324,7 @@ export async function recordMatchOutcome(
     };
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
+    return null;
   }
 }
 
@@ -739,6 +765,7 @@ export async function joinMultiplayerRoom(
       throw error;
     }
     handleFirestoreError(error, OperationType.WRITE, roomPath);
+    throw new Error('Firestore quota exceeded. Unable to join room.');
   }
 }
 

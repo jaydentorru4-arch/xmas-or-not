@@ -140,10 +140,10 @@ export class MazeEngine {
   private playerTrapStunRemaining = 0;
 
   // Mobile Touch Input State
+  private mobileMode = false;
   private touchMoveX = 0;
   private touchMoveZ = 0;
-  private touchLookYawDelta = 0;
-  private touchLookPitchDelta = 0;
+  private touchSprint = false;
 
   // Multiplayer State
   private isMultiplayer = false;
@@ -267,6 +267,7 @@ export class MazeEngine {
     canvas.style.display = 'block';
     canvas.style.width = '100%';
     canvas.style.height = '100%';
+    canvas.style.touchAction = 'none';
     this.container.appendChild(canvas);
 
     this.scene = new THREE.Scene();
@@ -972,6 +973,8 @@ export class MazeEngine {
     this.chatOpen = open;
     if (open) {
       this.keys = {};
+      this.touchMoveX = 0;
+      this.touchMoveZ = 0;
       this.draggingLook = false;
       this.exitPointerLockSafe();
     }
@@ -991,6 +994,9 @@ export class MazeEngine {
     if (this.phase === 'playing') {
       this.phase = 'paused';
       this.keys = {};
+      this.touchMoveX = 0;
+      this.touchMoveZ = 0;
+      this.touchSprint = false;
       this.draggingLook = false;
       this.exitPointerLockSafe();
       this.pushHud();
@@ -1007,6 +1013,9 @@ export class MazeEngine {
     this.alive = true;
     this.spectating = false;
     this.chatOpen = false;
+    this.touchMoveX = 0;
+    this.touchMoveZ = 0;
+    this.touchSprint = false;
     this.mpCallbacks = {};
     this.remoteSantaTarget = null;
     this.exitPointerLockSafe();
@@ -1033,13 +1042,32 @@ export class MazeEngine {
     this.pushHud();
   }
 
+  public setMobileMode(enabled: boolean): void {
+    this.mobileMode = enabled;
+    if (enabled) {
+      this.exitPointerLockSafe();
+    } else {
+      this.touchMoveX = 0;
+      this.touchMoveZ = 0;
+      this.touchSprint = false;
+    }
+  }
+
+  public unlockAudio(): void {
+    this.audio.init();
+  }
+
   public setTouchMoveVector(x: number, z: number): void {
     this.touchMoveX = x;
     this.touchMoveZ = z;
   }
 
+  public setTouchSprint(sprinting: boolean): void {
+    this.touchSprint = sprinting;
+  }
+
   public applyTouchLookDelta(dx: number, dy: number): void {
-    const sens = 0.0032;
+    const sens = 0.0046;
     this.yaw -= dx * sens;
     this.pitch = THREE.MathUtils.clamp(this.pitch - dy * sens, -1.25, 1.25);
   }
@@ -1080,8 +1108,13 @@ export class MazeEngine {
     if (this.keys['KeyD']) strafe += 1;
     if (this.keys['KeyA']) strafe -= 1;
 
-    // Default quick dodge sideways or forward if stationary
-    if (fwd === 0 && strafe === 0) {
+    if (Math.abs(this.touchMoveZ) > 0.1 || Math.abs(this.touchMoveX) > 0.1) {
+      fwd -= this.touchMoveZ;
+      strafe += this.touchMoveX;
+    }
+
+    // Default quick dodge forward if stationary
+    if (Math.abs(fwd) < 0.05 && Math.abs(strafe) < 0.05) {
       fwd = 1;
     }
 
@@ -1184,7 +1217,7 @@ export class MazeEngine {
   }
 
   public requestPointerLockSafe(): void {
-    if (this.chatOpen) return;
+    if (this.chatOpen || this.mobileMode) return;
     try {
       const canvas = this.renderer?.domElement;
       if (canvas && document.pointerLockElement !== canvas && canvas.requestPointerLock) {
@@ -1254,6 +1287,9 @@ export class MazeEngine {
   private handlePointerDown = (e: PointerEvent) => {
     if (this.phase !== 'playing' || this.chatOpen) return;
     this.audio.init();
+    if (this.mobileMode || e.pointerType === 'touch') {
+      return;
+    }
     this.draggingLook = true;
     this.pointerDownX = e.clientX;
     this.pointerDownY = e.clientY;
@@ -1273,6 +1309,7 @@ export class MazeEngine {
 
   private handlePointerMove = (e: PointerEvent) => {
     if (this.phase !== 'playing' || this.chatOpen) return;
+    if (this.mobileMode || e.pointerType === 'touch') return;
     const sensitivity = 0.0022;
     if (this.pointerLocked) {
       this.yaw -= e.movementX * sensitivity;
@@ -1288,6 +1325,10 @@ export class MazeEngine {
   };
 
   private handlePointerUp = (e: PointerEvent) => {
+    if (this.mobileMode || e.pointerType === 'touch') {
+      this.draggingLook = false;
+      return;
+    }
     if (
       this.draggingLook &&
       !this.pointerLocked &&
@@ -1579,6 +1620,9 @@ export class MazeEngine {
         const w = cellToWorld(nextStep.r, nextStep.c, this.mazeData.size, CELL_SIZE);
         moveTargetX = w.x;
         moveTargetZ = w.z;
+      } else {
+        moveTargetX = nearestTarget.x;
+        moveTargetZ = nearestTarget.z;
       }
     }
 
@@ -1715,7 +1759,7 @@ export class MazeEngine {
     posAttr.needsUpdate = true;
   }
 
-  private updateBulbsAndProps(nowSec: number): void {
+  private updateBulbsAndProps(dt: number, nowSec: number): void {
     for (const o of this.ornaments) {
       if (o.collected) continue;
       o.starGroup.rotation.y = nowSec * 1.4 + o.id;
@@ -1738,10 +1782,10 @@ export class MazeEngine {
     }
 
     for (const elf of this.tinyElves) {
-      elf.update(0.016, nowSec, this.playerPos.x, this.playerPos.z);
+      elf.update(dt, nowSec, this.playerPos.x, this.playerPos.z, this.mazeData.grid, CELL_SIZE, this.mazeData.size);
     }
     if (this.elfHelper) {
-      this.elfHelper.update(0.016, nowSec, this.santaPos.x, this.santaPos.z);
+      this.elfHelper.update(dt, nowSec, this.santaPos.x, this.santaPos.z, this.mazeData.grid, CELL_SIZE, this.mazeData.size);
     }
 
     if (this.chimeTrailGroup && this.chimeTrailGroup.visible) {
@@ -1774,7 +1818,7 @@ export class MazeEngine {
 
   private stepSimulation(dt: number, nowSec: number): void {
     this.updateSnow(dt);
-    this.updateBulbsAndProps(nowSec);
+    this.updateBulbsAndProps(dt, nowSec);
 
     if (this.shotTracerTimer > 0) {
       this.shotTracerTimer -= dt;
@@ -1910,9 +1954,16 @@ export class MazeEngine {
       strafeInput = 0;
     }
 
-    const wantsMove = forwardInput !== 0 || strafeInput !== 0;
+    const touchMagnitude = Math.hypot(this.touchMoveX, this.touchMoveZ);
+    const wantsMove = Math.abs(forwardInput) > 0.01 || Math.abs(strafeInput) > 0.01;
     const wantsSprint =
-      controlsActive && (this.keys['ShiftLeft'] || this.keys['ShiftRight'] || Math.abs(this.touchMoveZ) > 0.85) && wantsMove && this.stamina > 2;
+      controlsActive &&
+      (this.keys['ShiftLeft'] ||
+        this.keys['ShiftRight'] ||
+        this.touchSprint ||
+        touchMagnitude > 0.92) &&
+      wantsMove &&
+      this.stamina > 2;
     const sprinting = wantsSprint && !this.spectating;
 
     if (sprinting) {
@@ -1949,6 +2000,7 @@ export class MazeEngine {
       this.walkBobPhase += dt * 16;
     } else if (wantsMove) {
       const moveSpeed = sprinting ? 6.75 : 4.15;
+      const inputMag = Math.min(1, Math.hypot(forwardInput, strafeInput));
       _vecForward.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
       _vecRight.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
       _vecMove
@@ -1956,13 +2008,13 @@ export class MazeEngine {
         .addScaledVector(_vecForward, forwardInput)
         .addScaledVector(_vecRight, strafeInput)
         .normalize()
-        .multiplyScalar(moveSpeed * dt);
+        .multiplyScalar(moveSpeed * inputMag * dt);
 
       this.playerPos.x += _vecMove.x;
       this.playerPos.z += _vecMove.z;
       this.resolveMazeCollisions(this.playerPos, PLAYER_RADIUS);
 
-      this.walkBobPhase += dt * (sprinting ? 14 : 9.5);
+      this.walkBobPhase += dt * (sprinting ? 14 : 9.5) * inputMag;
     }
 
     if (!this.spectating && !this.exitUnlocked && this.exitGate) {

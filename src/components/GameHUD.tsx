@@ -17,11 +17,14 @@ import {
 } from 'lucide-react';
 import { HudSnapshot, WEAPON_SPECS } from '../game/types';
 import { MazeMap } from './MazeMap';
+import { MobileControls } from './MobileControls';
 
 interface GameHUDProps {
   hud: HudSnapshot;
   teammateCount: number;
   mapExpanded: boolean;
+  showMobileControls: boolean;
+  mobileSprinting: boolean;
   onToggleMapExpanded: () => void;
   onToggleMute: () => void;
   onPause: () => void;
@@ -32,6 +35,10 @@ interface GameHUDProps {
   onToggleHudHidden: () => void;
   onLockPointer: () => void;
   onToggleChat: () => void;
+  onUnlockAudio: () => void;
+  onMobileMove: (x: number, z: number) => void;
+  onMobileLook: (dx: number, dy: number) => void;
+  onToggleMobileSprint: (sprinting: boolean) => void;
 }
 
 function formatTime(sec: number): string {
@@ -76,6 +83,8 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   hud,
   teammateCount,
   mapExpanded,
+  showMobileControls,
+  mobileSprinting,
   onToggleMapExpanded,
   onToggleMute,
   onPause,
@@ -86,6 +95,10 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   onToggleHudHidden,
   onLockPointer,
   onToggleChat,
+  onUnlockAudio,
+  onMobileMove,
+  onMobileLook,
+  onToggleMobileSprint,
 }) => {
   if (hud.phase !== 'playing') return null;
 
@@ -212,51 +225,83 @@ export const GameHUD: React.FC<GameHUDProps> = ({
       )}
 
       {/* Top Row */}
-      <div className="absolute top-0 left-0 right-0 flex items-start justify-between px-5 pt-4 gap-4">
-        {/* Top-Left Objective Readout */}
-        <div className="pointer-events-auto flex flex-col gap-1 bg-[#060913]/88 border border-white/12 rounded-lg px-4 py-2.5 shrink-0">
-          <div className="flex items-center gap-2.5 text-sm font-medium text-slate-100 whitespace-nowrap">
-            <span className="text-xs font-mono-tabular font-semibold text-red-300">Lv {hud.level}</span>
+      <div className="relative z-20 flex items-start justify-between px-3 sm:px-5 pt-2.5 sm:pt-4 gap-3 pointer-events-none">
+        {/* Top-Left Objective Readout (+ Mobile Stamina & Compact Compass) */}
+        <div className="flex flex-col gap-1.5 max-w-[calc(100vw-130px)] sm:max-w-none">
+          <div className="pointer-events-auto flex flex-col gap-1 bg-[#060913]/88 border border-white/12 rounded-lg px-3 sm:px-4 py-1.5 sm:py-2.5 shrink-0">
+            <div className="flex items-center gap-2 sm:gap-2.5 text-xs sm:text-sm font-medium text-slate-100 whitespace-nowrap">
+              <span className="text-[11px] sm:text-xs font-mono-tabular font-semibold text-red-300">Lv {hud.level}</span>
+              <span aria-hidden="true" className="text-slate-600">
+                ·
+              </span>
+              <span className={hud.exitUnlocked ? 'text-emerald-400 font-semibold' : 'text-amber-300 font-semibold'}>
+                {hud.exitUnlocked
+                  ? 'Exit Unlocked'
+                  : `Stars ${hud.ornamentsCollected}/${hud.ornamentsTotal}`}
+              </span>
+              <span aria-hidden="true" className="text-slate-500">
+                ·
+              </span>
+              <span className="font-mono-tabular text-slate-300">{formatTime(hud.elapsedSeconds)}</span>
+              {hud.isMultiplayer && (
+                <>
+                  <span aria-hidden="true" className="text-slate-500">
+                    ·
+                  </span>
+                  <span className="inline-flex items-center gap-1 text-xs text-sky-300">
+                    <Users className="w-3.5 h-3.5" />
+                    <span>{teammateCount}</span>
+                  </span>
+                </>
+              )}
+            </div>
+            <div className="text-[11px] sm:text-xs text-slate-400 truncate">
+              {hud.spectating
+                ? showMobileControls
+                  ? 'Use stick to fly or watch team'
+                  : 'WASD to free-fly or watch teammates'
+                : hud.exitUnlocked
+                  ? `Follow EXIT marker (${Math.round(hud.exitDistance)}m)`
+                  : hud.nearestOrnamentDistance !== null
+                    ? `Star ${Math.round(hud.nearestOrnamentDistance)}m · ${
+                        hud.nearestBatteryDistance !== null
+                          ? `Bat ${Math.round(hud.nearestBatteryDistance)}m · `
+                          : ''
+                      }${
+                        hud.equippedWeapon
+                          ? WEAPON_SPECS[hud.equippedWeapon].label
+                          : `Drop ${Math.ceil(hud.nextWeaponSpawnIn)}s`
+                      }`
+                    : `Exit ${Math.round(hud.exitDistance)}m`}
+            </div>
+
+            {showMobileControls && (
+              <div className="flex items-center gap-2 pt-0.5">
+                <span className="text-[10px] text-slate-400">Stamina</span>
+                <div className="flex-1 max-w-[96px] h-1.5 bg-slate-800 rounded-sm overflow-hidden">
+                  <div
+                    className={`h-full transition-all duration-100 ${
+                      hud.stamina < 25 ? 'bg-red-500' : 'bg-sky-400'
+                    }`}
+                    style={{ width: `${Math.round(hud.stamina)}%` }}
+                  />
+                </div>
+                <span className="text-[10px] font-mono-tabular text-slate-300">
+                  {Math.round(hud.stamina)}%
+                </span>
+              </div>
+            )}
+          </div>
+
+          {/* Mobile Compact Exit & Threat Strip (nested under left card so it never collides with minimap) */}
+          <div className="sm:hidden flex items-center gap-2 bg-[#060913]/90 border border-white/15 rounded-lg px-2.5 py-1 text-[11px] whitespace-nowrap w-fit max-w-full overflow-hidden">
+            <span className={hud.exitUnlocked ? 'text-emerald-300 font-semibold' : 'text-red-300 font-semibold'}>
+              EXIT {describeDirection(hud.exitAngleDeg)} {Math.round(hud.exitDistance)}m
+            </span>
             <span aria-hidden="true" className="text-slate-600">
               ·
             </span>
-            <span className={hud.exitUnlocked ? 'text-emerald-400 font-semibold' : 'text-amber-300 font-semibold'}>
-              {hud.exitUnlocked
-                ? 'Exit Gate Unlocked'
-                : `Ornaments ${hud.ornamentsCollected} / ${hud.ornamentsTotal}`}
-            </span>
-            <span aria-hidden="true" className="text-slate-500">
-              ·
-            </span>
-            <span className="font-mono-tabular text-slate-300">{formatTime(hud.elapsedSeconds)}</span>
-            {hud.isMultiplayer && (
-              <>
-                <span aria-hidden="true" className="text-slate-500">
-                  ·
-                </span>
-                <span className="inline-flex items-center gap-1 text-xs text-sky-300">
-                  <Users className="w-3.5 h-3.5" />
-                  <span>{teammateCount}</span>
-                </span>
-              </>
-            )}
-          </div>
-          <div className="text-xs text-slate-400 whitespace-nowrap">
-            {hud.spectating
-              ? 'WASD to free-fly or watch teammates'
-              : hud.exitUnlocked
-                ? `Follow EXIT marker (${Math.round(hud.exitDistance)}m)`
-                : hud.nearestOrnamentDistance !== null
-                  ? `Star ${Math.round(hud.nearestOrnamentDistance)}m · ${
-                      hud.nearestBatteryDistance !== null
-                        ? `Battery ${Math.round(hud.nearestBatteryDistance)}m · `
-                        : ''
-                    }${
-                      hud.equippedWeapon
-                        ? WEAPON_SPECS[hud.equippedWeapon].label
-                        : `Drop ${Math.ceil(hud.nextWeaponSpawnIn)}s`
-                    }`
-                  : `Exit ${Math.round(hud.exitDistance)}m`}
+            <span className={`truncate ${threatTextClass}`}>{threatLabel}</span>
           </div>
         </div>
 
@@ -325,8 +370,8 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         </div>
 
         {/* Top-Right Controls */}
-        <div className="pointer-events-auto flex items-center gap-2 shrink-0">
-          {!hud.pointerLocked && !hud.chatOpen && (
+        <div className="pointer-events-auto flex items-center gap-1.5 sm:gap-2 shrink-0">
+          {!showMobileControls && !hud.pointerLocked && !hud.chatOpen && (
             <button
               type="button"
               onClick={onLockPointer}
@@ -339,7 +384,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             type="button"
             onClick={onToggleMute}
             aria-label={hud.muted ? 'Unmute audio' : 'Mute audio'}
-            className="flex items-center justify-center w-10 h-10 text-slate-200 bg-[#060913]/88 border border-white/15 rounded-lg hover:bg-[#0e1528] transition-colors cursor-pointer"
+            className="flex items-center justify-center w-9 h-9 sm:w-10 sm:h-10 text-slate-200 bg-[#060913]/88 border border-white/15 rounded-lg hover:bg-[#0e1528] transition-colors cursor-pointer"
           >
             {hud.muted ? <VolumeX className="w-4 h-4 text-red-400" /> : <Volume2 className="w-4 h-4" />}
           </button>
@@ -347,23 +392,12 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             type="button"
             onClick={onPause}
             aria-label="Pause game"
-            className="flex items-center gap-2 px-3.5 h-10 text-xs font-medium text-slate-100 bg-[#060913]/88 border border-white/15 rounded-lg hover:bg-[#0e1528] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            className="flex items-center gap-1.5 px-2.5 sm:px-3.5 h-9 sm:h-10 text-xs font-medium text-slate-100 bg-[#060913]/88 border border-white/15 rounded-lg hover:bg-[#0e1528] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Pause className="w-3.5 h-3.5" />
             <span>{hud.isMultiplayer ? 'Menu' : 'Pause'}</span>
           </button>
         </div>
-      </div>
-
-      {/* Mobile Compact Strip */}
-      <div className="sm:hidden absolute top-20 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-[#060913]/90 border border-white/15 rounded-lg px-3 py-1.5 text-xs whitespace-nowrap">
-        <span className={hud.exitUnlocked ? 'text-emerald-300 font-semibold' : 'text-red-300 font-semibold'}>
-          EXIT {describeDirection(hud.exitAngleDeg)} · {Math.round(hud.exitDistance)}m
-        </span>
-        <span aria-hidden="true" className="text-slate-600">
-          ·
-        </span>
-        <span className={threatTextClass}>{threatLabel}</span>
       </div>
 
       {/* Center Reticle & Chime Sense Corridor Turn Arrow */}
@@ -406,137 +440,166 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         </div>
       )}
 
-      {/* Collapsible Bottom Control Dock */}
-      <div
-        className={`fixed bottom-5 left-1/2 -translate-x-1/2 flex flex-col items-center transition-transform duration-200 ${
-          hud.hudHidden ? 'translate-y-[calc(100%-34px)]' : 'translate-y-0'
-        }`}
-      >
-        <button
-          type="button"
-          onClick={onToggleHudHidden}
-          className="pointer-events-auto flex items-center gap-1.5 px-3 py-1 text-xs font-medium text-slate-300 bg-[#060913]/90 border border-b-0 border-white/15 rounded-t-lg hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+      {/* Mobile Touch Controls (auto-enabled on mobile devices) */}
+      {showMobileControls && !hud.chatOpen && !mapExpanded && (
+        <MobileControls
+          alive={hud.alive}
+          spectating={hud.spectating}
+          isMultiplayer={hud.isMultiplayer}
+          flashlightOn={hud.flashlightOn}
+          battery={hud.battery}
+          chimeCooldown={hud.chimeCooldown}
+          dodgeCooldown={hud.dodgeCooldown}
+          equippedWeapon={hud.equippedWeapon}
+          nearestWeaponDistance={hud.nearestWeaponDistance}
+          nextWeaponSpawnIn={hud.nextWeaponSpawnIn}
+          sprinting={mobileSprinting}
+          onUnlockAudio={onUnlockAudio}
+          onToggleFlashlight={onToggleFlashlight}
+          onTriggerChime={onTriggerChime}
+          onUseWeapon={onUseWeapon}
+          onDodge={onDodge}
+          onToggleMap={onToggleMapExpanded}
+          onToggleChat={onToggleChat}
+          onMoveInput={onMobileMove}
+          onLookInput={onMobileLook}
+          onToggleSprint={onToggleMobileSprint}
+        />
+      )}
+
+      {/* Collapsible Desktop Bottom Control Dock */}
+      {!showMobileControls && (
+        <div
+          className={`fixed bottom-5 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center transition-transform duration-200 ${
+            hud.hudHidden ? 'translate-y-[calc(100%-34px)]' : 'translate-y-0'
+          }`}
         >
-          {hud.hudHidden ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-          <span>{hud.hudHidden ? 'Show Controls' : 'Hide Controls'}</span>
-        </button>
+          <button
+            type="button"
+            onClick={onToggleHudHidden}
+            className="pointer-events-auto flex items-center gap-1.5 px-3 py-1 text-xs font-medium text-slate-300 bg-[#060913]/90 border border-b-0 border-white/15 rounded-t-lg hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            {hud.hudHidden ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            <span>{hud.hudHidden ? 'Show Controls' : 'Hide Controls'}</span>
+          </button>
 
-        <div className="pointer-events-auto flex flex-wrap sm:flex-nowrap items-center gap-2.5 sm:gap-3 px-4 sm:px-5 py-3 bg-[#060913]/90 border border-white/15 rounded-xl max-w-[96vw]">
-          <div className="flex items-center gap-2.5 min-w-[122px]">
-            <span className="text-xs font-medium text-slate-300 whitespace-nowrap">Stamina</span>
-            <div className="w-20 h-2 bg-slate-800 rounded-sm overflow-hidden">
-              <div
-                className={`h-full transition-all duration-100 ${
-                  hud.stamina < 25 ? 'bg-red-500' : 'bg-sky-400'
-                }`}
-                style={{ width: `${Math.round(hud.stamina)}%` }}
-              />
+          <div className="pointer-events-auto flex flex-wrap sm:flex-nowrap items-center gap-2.5 sm:gap-3 px-4 sm:px-5 py-3 bg-[#060913]/90 border border-white/15 rounded-xl max-w-[96vw]">
+            <div className="flex items-center gap-2.5 min-w-[122px]">
+              <span className="text-xs font-medium text-slate-300 whitespace-nowrap">Stamina</span>
+              <div className="w-20 h-2 bg-slate-800 rounded-sm overflow-hidden">
+                <div
+                  className={`h-full transition-all duration-100 ${
+                    hud.stamina < 25 ? 'bg-red-500' : 'bg-sky-400'
+                  }`}
+                  style={{ width: `${Math.round(hud.stamina)}%` }}
+                />
+              </div>
             </div>
-          </div>
 
-          <div className="hidden sm:block w-px h-5 bg-white/12" aria-hidden="true" />
+            <div className="hidden sm:block w-px h-5 bg-white/12" aria-hidden="true" />
 
-          <button
-            type="button"
-            onClick={onToggleFlashlight}
-            disabled={!hud.alive}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-              hud.flashlightOn
-                ? 'bg-amber-500/18 border-amber-400/45 text-amber-200'
-                : 'bg-slate-900/90 border-emerald-400/30 text-emerald-300 hover:text-white'
-            }`}
-          >
-            <Flashlight className="w-3.5 h-3.5" />
-            <span>{hud.flashlightOn ? 'Light (F)' : 'Charging (F)'}</span>
-            <span className="font-mono-tabular text-slate-200">{hud.battery.toFixed(1)}%</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={onTriggerChime}
-            disabled={hud.chimeCooldown > 0 || !hud.alive}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-              hud.chimeCooldown > 0 || !hud.alive
-                ? 'bg-slate-900/60 border-white/10 text-slate-500 cursor-not-allowed'
-                : 'bg-slate-900/90 border-white/15 text-slate-200 hover:bg-slate-800 cursor-pointer'
-            }`}
-          >
-            <Bell className="w-3.5 h-3.5" />
-            <span>
-              {hud.chimeCooldown > 0
-                ? `Chime (${Math.ceil(hud.chimeCooldown)}s)`
-                : 'Chime (C)'}
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={onDodge}
-            disabled={hud.dodgeCooldown > 0 || !hud.alive || hud.spectating}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-              hud.dodgeCooldown > 0 || !hud.alive || hud.spectating
-                ? 'bg-slate-900/60 border-white/10 text-slate-500 cursor-not-allowed'
-                : 'bg-slate-900/90 border-white/15 text-slate-200 hover:bg-slate-800 cursor-pointer'
-            }`}
-          >
-            <Wind className="w-3.5 h-3.5" />
-            <span>
-              {hud.dodgeCooldown > 0
-                ? `Dodge (${hud.dodgeCooldown.toFixed(1)}s)`
-                : 'Dodge (Space)'}
-            </span>
-          </button>
-
-          {hud.equippedWeapon ? (
             <button
               type="button"
-              onClick={onUseWeapon}
-              disabled={!hud.alive || hud.spectating}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border bg-sky-500/20 border-sky-400/55 text-sky-200 hover:bg-sky-500/30 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <Crosshair className="w-3.5 h-3.5" />
-              <span>{WEAPON_SPECS[hud.equippedWeapon].label} (Click/G)</span>
-            </button>
-          ) : (
-            <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border bg-slate-900/60 border-white/10 text-xs text-slate-400 whitespace-nowrap shrink-0">
-              <Crosshair className="w-3.5 h-3.5 text-sky-400/80" />
-              <span>
-                {hud.nearestWeaponDistance !== null
-                  ? `Weapon ${Math.round(hud.nearestWeaponDistance)}m`
-                  : `Drop ${Math.ceil(hud.nextWeaponSpawnIn)}s`}
-              </span>
-            </div>
-          )}
-
-          <button
-            type="button"
-            onClick={onToggleMapExpanded}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-              mapExpanded
-                ? 'bg-emerald-500/20 border-emerald-400/50 text-emerald-200'
-                : 'bg-slate-900/90 border-white/15 text-slate-200 hover:bg-slate-800'
-            }`}
-          >
-            <MapIcon className="w-3.5 h-3.5" />
-            <span>Map (Tab)</span>
-          </button>
-
-          {hud.isMultiplayer && (
-            <button
-              type="button"
-              onClick={onToggleChat}
+              onClick={onToggleFlashlight}
+              disabled={!hud.alive}
               className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                hud.chatOpen
-                  ? 'bg-sky-500/20 border-sky-400/50 text-sky-200'
+                hud.flashlightOn
+                  ? 'bg-amber-500/18 border-amber-400/45 text-amber-200'
+                  : 'bg-slate-900/90 border-emerald-400/30 text-emerald-300 hover:text-white'
+              }`}
+            >
+              <Flashlight className="w-3.5 h-3.5" />
+              <span>{hud.flashlightOn ? 'Light (F)' : 'Charging (F)'}</span>
+              <span className="font-mono-tabular text-slate-200">{hud.battery.toFixed(1)}%</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onTriggerChime}
+              disabled={hud.chimeCooldown > 0 || !hud.alive}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                hud.chimeCooldown > 0 || !hud.alive
+                  ? 'bg-slate-900/60 border-white/10 text-slate-500 cursor-not-allowed'
+                  : 'bg-slate-900/90 border-white/15 text-slate-200 hover:bg-slate-800 cursor-pointer'
+              }`}
+            >
+              <Bell className="w-3.5 h-3.5" />
+              <span>
+                {hud.chimeCooldown > 0
+                  ? `Chime (${Math.ceil(hud.chimeCooldown)}s)`
+                  : 'Chime (C)'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onDodge}
+              disabled={hud.dodgeCooldown > 0 || !hud.alive || hud.spectating}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                hud.dodgeCooldown > 0 || !hud.alive || hud.spectating
+                  ? 'bg-slate-900/60 border-white/10 text-slate-500 cursor-not-allowed'
+                  : 'bg-slate-900/90 border-white/15 text-slate-200 hover:bg-slate-800 cursor-pointer'
+              }`}
+            >
+              <Wind className="w-3.5 h-3.5" />
+              <span>
+                {hud.dodgeCooldown > 0
+                  ? `Dodge (${hud.dodgeCooldown.toFixed(1)}s)`
+                  : 'Dodge (Space)'}
+              </span>
+            </button>
+
+            {hud.equippedWeapon ? (
+              <button
+                type="button"
+                onClick={onUseWeapon}
+                disabled={!hud.alive || hud.spectating}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border bg-sky-500/20 border-sky-400/55 text-sky-200 hover:bg-sky-500/30 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <Crosshair className="w-3.5 h-3.5" />
+                <span>{WEAPON_SPECS[hud.equippedWeapon].label} (Click/G)</span>
+              </button>
+            ) : (
+              <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border bg-slate-900/60 border-white/10 text-xs text-slate-400 whitespace-nowrap shrink-0">
+                <Crosshair className="w-3.5 h-3.5 text-sky-400/80" />
+                <span>
+                  {hud.nearestWeaponDistance !== null
+                    ? `Weapon ${Math.round(hud.nearestWeaponDistance)}m`
+                    : `Drop ${Math.ceil(hud.nextWeaponSpawnIn)}s`}
+                </span>
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={onToggleMapExpanded}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                mapExpanded
+                  ? 'bg-emerald-500/20 border-emerald-400/50 text-emerald-200'
                   : 'bg-slate-900/90 border-white/15 text-slate-200 hover:bg-slate-800'
               }`}
             >
-              <MessageSquare className="w-3.5 h-3.5" />
-              <span>Chat (T)</span>
+              <MapIcon className="w-3.5 h-3.5" />
+              <span>Map (Tab)</span>
             </button>
-          )}
+
+            {hud.isMultiplayer && (
+              <button
+                type="button"
+                onClick={onToggleChat}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  hud.chatOpen
+                    ? 'bg-sky-500/20 border-sky-400/50 text-sky-200'
+                    : 'bg-slate-900/90 border-white/15 text-slate-200 hover:bg-slate-800'
+                }`}
+              >
+                <MessageSquare className="w-3.5 h-3.5" />
+                <span>Chat (T)</span>
+              </button>
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };

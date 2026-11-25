@@ -189,6 +189,7 @@ export interface MazeData {
   exitCell: GridCoord;
   ornaments: GridCoord[];
   batteries: GridCoord[];
+  traps: GridCoord[];
 }
 
 export interface SurvivorProfile {

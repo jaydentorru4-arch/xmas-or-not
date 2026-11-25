@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { onAuthStateChanged, type User } from 'firebase/auth';
 import { GameHUD } from './components/GameHUD';
 import { InGameChat } from './components/InGameChat';
 import { MenuOverlays } from './components/MenuOverlays';
 import { auth } from './firebase';
 import { MazeEngine } from './game/MazeEngine';
+import { useDeviceDetection } from './utils/deviceDetection';
 import {
   applyXpGain,
   ChatMessageData,
@@ -136,6 +137,13 @@ export default function App() {
     newLevel: number;
   } | null>(null);
   const [mapExpanded, setMapExpanded] = useState(false);
+  const [mobileSprinting, setMobileSprinting] = useState(false);
+  const {
+    isMobileDevice,
+    controlScheme,
+    setControlScheme,
+    showMobileControls,
+  } = useDeviceDetection();
 
   // Firebase Auth & Survivor Account
   const [authLoading, setAuthLoading] = useState(true);
@@ -168,6 +176,7 @@ export default function App() {
     const engine = new MazeEngine(container, (snapshot) => {
       setHud(snapshot);
     });
+    engine.setMobileMode(showMobileControls);
     engineRef.current = engine;
 
     return () => {
@@ -175,6 +184,16 @@ export default function App() {
       engineRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    engineRef.current?.setMobileMode(showMobileControls);
+  }, [showMobileControls]);
+
+  useEffect(() => {
+    if (hud.phase !== 'playing') {
+      setMobileSprinting(false);
+    }
+  }, [hud.phase]);
 
   // Listen to Firebase Auth state and load survivor profile
   useEffect(() => {
@@ -557,8 +576,25 @@ export default function App() {
     await sendRoomChatMessage(activeRoomId, profile, text);
   };
 
+  const handleMobileMove = useCallback((x: number, z: number) => {
+    engineRef.current?.setTouchMoveVector(x, z);
+  }, []);
+
+  const handleMobileLook = useCallback((dx: number, dy: number) => {
+    engineRef.current?.applyTouchLookDelta(dx, dy);
+  }, []);
+
+  const handleToggleMobileSprint = useCallback((sprinting: boolean) => {
+    setMobileSprinting(sprinting);
+    engineRef.current?.setTouchSprint(sprinting);
+  }, []);
+
+  const handleUnlockAudio = useCallback(() => {
+    engineRef.current?.unlockAudio();
+  }, []);
+
   return (
-    <main className="relative w-screen h-screen overflow-hidden bg-[#050811]">
+    <main className="relative w-screen h-[100dvh] overflow-hidden bg-[#050811]">
       {/* Isolated WebGL canvas container (never re-created on HUD updates) */}
       <div ref={mountRef} className="w-full h-full" />
 
@@ -566,6 +602,8 @@ export default function App() {
         hud={hud}
         teammateCount={Math.max(1, roomPlayers.length)}
         mapExpanded={mapExpanded}
+        showMobileControls={showMobileControls}
+        mobileSprinting={mobileSprinting}
         onToggleMapExpanded={() => setMapExpanded((prev) => !prev)}
         onToggleMute={() => engineRef.current?.toggleMute()}
         onPause={() => engineRef.current?.pauseGame()}
@@ -576,11 +614,16 @@ export default function App() {
         onToggleHudHidden={() => engineRef.current?.toggleHudHidden()}
         onLockPointer={() => engineRef.current?.requestPointerLockSafe()}
         onToggleChat={() => engineRef.current?.setChatOpen(!hud.chatOpen)}
+        onUnlockAudio={handleUnlockAudio}
+        onMobileMove={handleMobileMove}
+        onMobileLook={handleMobileLook}
+        onToggleMobileSprint={handleToggleMobileSprint}
       />
 
       <InGameChat
         visible={hud.phase === 'playing' && hud.isMultiplayer}
         chatOpen={hud.chatOpen}
+        showMobileControls={showMobileControls}
         messages={roomChat}
         onSetChatOpen={(open) => engineRef.current?.setChatOpen(open)}
         onSendMessage={handleSendRoomChat}
@@ -598,6 +641,10 @@ export default function App() {
         onStartSolo={handleStartSolo}
         onResume={() => engineRef.current?.resumeGame()}
         onReturnMenu={() => engineRef.current?.returnToMenu()}
+        isMobileDevice={isMobileDevice}
+        showMobileControls={showMobileControls}
+        controlScheme={controlScheme}
+        onSetControlScheme={setControlScheme}
         authLoading={authLoading}
         authError={authError}
         profile={profile}
