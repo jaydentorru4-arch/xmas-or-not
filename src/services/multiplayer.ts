@@ -1,6 +1,10 @@
 import {
+  createUserWithEmailAndPassword,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
   signInWithPopup,
   signOut,
+  updateProfile,
   type User,
 } from 'firebase/auth';
 import {
@@ -108,16 +112,123 @@ async function ensureFriendCodeLookup(uid: string, friendCode: string): Promise<
   }
 }
 
+let pendingRegistrationName: string | null = null;
+
+function mapFirebaseAuthError(error: unknown, fallback: string): Error {
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code?: unknown }).code || '')
+      : '';
+
+  switch (code) {
+    case 'auth/operation-not-allowed':
+      return new Error(
+        'Email/Password sign-in is not enabled in Firebase Console yet. Enable the Email/Password provider in Authentication → Sign-in method, or sign in with Google.'
+      );
+    case 'auth/email-already-in-use':
+      return new Error('An account with this email already exists. Switch to Sign In instead.');
+    case 'auth/invalid-email':
+      return new Error('Please enter a valid email address.');
+    case 'auth/weak-password':
+      return new Error('Password must be at least 6 characters long.');
+    case 'auth/invalid-credential':
+    case 'auth/wrong-password':
+    case 'auth/user-not-found':
+      return new Error('Incorrect email or password.');
+    case 'auth/user-disabled':
+      return new Error('This account has been disabled.');
+    case 'auth/too-many-requests':
+      return new Error('Too many attempts. Please wait a moment and try again.');
+    case 'auth/popup-closed-by-user':
+      return new Error('Google sign-in popup was closed before completing.');
+    case 'auth/network-request-failed':
+      return new Error('Network error. Check your connection and try again.');
+    default:
+      return error instanceof Error ? error : new Error(fallback);
+  }
+}
+
 export async function signInSurvivorWithGoogle(): Promise<User> {
-  const res = await signInWithPopup(auth, googleProvider);
-  return res.user;
+  try {
+    const res = await signInWithPopup(auth, googleProvider);
+    return res.user;
+  } catch (error) {
+    throw mapFirebaseAuthError(error, 'Google Sign-In was cancelled or failed.');
+  }
+}
+
+export async function registerSurvivorWithEmail(
+  email: string,
+  password: string,
+  displayName: string
+): Promise<User> {
+  const cleanEmail = email.trim();
+  const cleanName = displayName.trim().replace(/\s+/g, ' ').slice(0, 24);
+  if (cleanName.length < 2) {
+    throw new Error('Survivor name must be at least 2 characters.');
+  }
+  if (!cleanEmail || !cleanEmail.includes('@')) {
+    throw new Error('Please enter a valid email address.');
+  }
+  if (password.length < 6) {
+    throw new Error('Password must be at least 6 characters long.');
+  }
+
+  pendingRegistrationName = cleanName;
+  try {
+    const cred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
+    try {
+      await updateProfile(cred.user, { displayName: cleanName });
+    } catch {
+      // Non-fatal; Firestore public profile also stores cleanName
+    }
+    return cred.user;
+  } catch (error) {
+    pendingRegistrationName = null;
+    throw mapFirebaseAuthError(error, 'Could not create your survivor account.');
+  }
+}
+
+export async function signInSurvivorWithEmail(email: string, password: string): Promise<User> {
+  const cleanEmail = email.trim();
+  if (!cleanEmail || !cleanEmail.includes('@')) {
+    throw new Error('Please enter a valid email address.');
+  }
+  if (!password) {
+    throw new Error('Please enter your password.');
+  }
+
+  try {
+    const cred = await signInWithEmailAndPassword(auth, cleanEmail, password);
+    return cred.user;
+  } catch (error) {
+    throw mapFirebaseAuthError(error, 'Could not sign in with email and password.');
+  }
+}
+
+export async function resetSurvivorPassword(email: string): Promise<void> {
+  const cleanEmail = email.trim();
+  if (!cleanEmail || !cleanEmail.includes('@')) {
+    throw new Error('Enter your account email first to receive a reset link.');
+  }
+  try {
+    await sendPasswordResetEmail(auth, cleanEmail);
+  } catch (error) {
+    throw mapFirebaseAuthError(error, 'Could not send password reset email.');
+  }
 }
 
 export async function signOutSurvivor(): Promise<void> {
+  pendingRegistrationName = null;
   await signOut(auth);
 }
 
 export async function loadOrCreateSurvivorProfile(user: User): Promise<SurvivorProfile> {
+  const chosenPendingName = pendingRegistrationName;
+  pendingRegistrationName = null;
+  const fallbackName = sanitizeDisplayName(
+    chosenPendingName || user.displayName || (user.email ? user.email.split('@')[0] : 'Survivor')
+  );
   const publicPath = `users/${user.uid}/public/profile`;
   const privatePath = `users/${user.uid}/private/info`;
 
@@ -183,9 +294,7 @@ export async function loadOrCreateSurvivorProfile(user: User): Promise<SurvivorP
       return profile;
     }
 
-    const defaultName = sanitizeDisplayName(
-      user.displayName || (user.email ? user.email.split('@')[0] : 'Survivor')
-    );
+    const defaultName = fallbackName;
     const defaultColor = COAT_COLORS[Math.floor(Math.random() * COAT_COLORS.length)].hex;
     const defaultScarf = SCARF_COLORS[Math.floor(Math.random() * SCARF_COLORS.length)].hex;
     const defaultHat: HatStyle = 'hood';
@@ -224,7 +333,7 @@ export async function loadOrCreateSurvivorProfile(user: User): Promise<SurvivorP
     handleFirestoreError(error, OperationType.WRITE, publicPath);
     return {
       uid: user.uid,
-      displayName: sanitizeDisplayName(user.displayName || 'Survivor'),
+      displayName: fallbackName,
       coatColor: COAT_COLORS[0].hex,
       scarfColor: SCARF_COLORS[0].hex,
       hatStyle: 'hood',

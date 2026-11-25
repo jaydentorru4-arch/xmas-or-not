@@ -20,16 +20,8 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function isVerifiedUser() {
-      return isSignedIn() && request.auth.token.email_verified == true;
-    }
-
     function isOwner(uid) {
       return isSignedIn() && request.auth.uid == uid;
-    }
-
-    function isVerifiedOwner(uid) {
-      return isVerifiedUser() && request.auth.uid == uid;
     }
 
     function isValidId(id) {
@@ -249,12 +241,12 @@ service cloud.firestore {
     match /users/{userId}/public/profile {
       allow get: if isSignedIn() && isValidId(userId);
       allow list: if false;
-      allow create: if isVerifiedOwner(userId)
+      allow create: if isOwner(userId)
         && isValidId(userId)
         && isValidPublicProfile(incoming())
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isVerifiedOwner(userId)
+      allow update: if isOwner(userId)
         && isValidId(userId)
         && isValidPublicProfile(incoming())
         && incoming().uid == existing().uid
@@ -271,12 +263,12 @@ service cloud.firestore {
     match /users/{userId}/private/info {
       allow get: if isOwner(userId) && isValidId(userId);
       allow list: if false;
-      allow create: if isVerifiedOwner(userId)
+      allow create: if isOwner(userId)
         && isValidId(userId)
         && isValidPrivateInfo(incoming())
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isVerifiedOwner(userId)
+      allow update: if isOwner(userId)
         && isValidId(userId)
         && isValidPrivateInfo(incoming())
         && incoming().uid == existing().uid
@@ -290,7 +282,7 @@ service cloud.firestore {
     match /users/{userId}/friends/{friendId} {
       allow get: if isOwner(userId) && isValidId(userId) && isValidId(friendId);
       allow list: if isOwner(userId) && isValidId(userId) && existing().ownerUid == userId;
-      allow create: if isVerifiedUser()
+      allow create: if isSignedIn()
         && isValidId(userId)
         && isValidId(friendId)
         && userId != friendId
@@ -304,7 +296,7 @@ service cloud.firestore {
           ||
           (request.auth.uid == friendId && incoming().status == 'pending_received')
         );
-      allow update: if isVerifiedUser()
+      allow update: if isSignedIn()
         && isValidId(userId)
         && isValidId(friendId)
         && isValidFriendRecord(incoming())
@@ -329,7 +321,7 @@ service cloud.firestore {
             ])
           )
         );
-      allow delete: if isVerifiedUser()
+      allow delete: if isSignedIn()
         && isValidId(userId)
         && isValidId(friendId)
         && (request.auth.uid == userId || request.auth.uid == friendId);
@@ -339,7 +331,7 @@ service cloud.firestore {
     match /friendCodes/{code} {
       allow get: if isSignedIn() && isValidFriendCode(code);
       allow list: if false;
-      allow create: if isVerifiedUser()
+      allow create: if isSignedIn()
         && isValidFriendCode(code)
         && isValidFriendCodeLookup(incoming())
         && incoming().friendCode == code
@@ -351,7 +343,7 @@ service cloud.firestore {
     match /globalChat/{messageId} {
       allow get: if isSignedIn() && isValidId(messageId) && existing().channel == 'global';
       allow list: if isSignedIn() && existing().channel == 'global';
-      allow create: if isVerifiedUser()
+      allow create: if isSignedIn()
         && isValidId(messageId)
         && isValidGlobalChatMessage(incoming())
         && incoming().createdAt == request.time;
@@ -362,7 +354,7 @@ service cloud.firestore {
     match /rooms/{roomId} {
       allow get: if isSignedIn() && isValidId(roomId);
       allow list: if isSignedIn() && existing().isPublic == true;
-      allow create: if isVerifiedUser()
+      allow create: if isSignedIn()
         && isValidId(roomId)
         && isValidRoom(incoming())
         && incoming().roomId == roomId
@@ -370,7 +362,7 @@ service cloud.firestore {
         && incoming().status == 'waiting'
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isVerifiedUser()
+      allow update: if isSignedIn()
         && isValidId(roomId)
         && isValidRoom(incoming())
         && existing().status != 'finished'
@@ -401,7 +393,7 @@ service cloud.firestore {
             ])
           )
         );
-      allow delete: if isVerifiedUser() && isValidId(roomId) && existing().hostId == request.auth.uid;
+      allow delete: if isSignedIn() && isValidId(roomId) && existing().hostId == request.auth.uid;
 
       // Room Players (Master Gate verifies parent room exists)
       match /players/{playerId} {
@@ -410,14 +402,14 @@ service cloud.firestore {
           && isValidId(playerId)
           && exists(/databases/$(database)/documents/rooms/$(roomId));
         allow list: if isSignedIn() && existing().roomId == roomId;
-        allow create: if isVerifiedOwner(playerId)
+        allow create: if isOwner(playerId)
           && isValidId(roomId)
           && isValidId(playerId)
           && isValidRoomPlayer(incoming())
           && incoming().roomId == roomId
           && incoming().updatedAt == request.time
           && exists(/databases/$(database)/documents/rooms/$(roomId));
-        allow update: if isVerifiedOwner(playerId)
+        allow update: if isOwner(playerId)
           && isValidId(roomId)
           && isValidId(playerId)
           && isValidRoomPlayer(incoming())
@@ -428,7 +420,7 @@ service cloud.firestore {
             'displayName', 'coatColor', 'scarfColor', 'hatStyle',
             'x', 'z', 'yaw', 'flashlightOn', 'alive', 'escaped', 'updatedAt'
           ]);
-        allow delete: if isVerifiedOwner(playerId) && isValidId(roomId) && isValidId(playerId);
+        allow delete: if isOwner(playerId) && isValidId(roomId) && isValidId(playerId);
       }
 
       // Host-Authoritative Evil Santa Live State
@@ -437,12 +429,12 @@ service cloud.firestore {
           && isValidId(roomId)
           && exists(/databases/$(database)/documents/rooms/$(roomId));
         allow list: if false;
-        allow create: if isVerifiedUser()
+        allow create: if isSignedIn()
           && isValidId(roomId)
           && isValidSantaState(incoming())
           && incoming().updatedAt == request.time
           && get(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == request.auth.uid;
-        allow update: if isVerifiedUser()
+        allow update: if isSignedIn()
           && isValidId(roomId)
           && isValidSantaState(incoming())
           && incoming().updatedAt == request.time
@@ -458,7 +450,7 @@ service cloud.firestore {
           && isValidId(messageId)
           && exists(/databases/$(database)/documents/rooms/$(roomId));
         allow list: if isSignedIn() && existing().roomId == roomId;
-        allow create: if isVerifiedUser()
+        allow create: if isSignedIn()
           && isValidId(roomId)
           && isValidId(messageId)
           && isValidRoomChatMessage(incoming())

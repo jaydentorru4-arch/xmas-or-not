@@ -29,11 +29,14 @@ import {
   leaveMultiplayerRoom,
   loadOrCreateSurvivorProfile,
   recordMatchOutcome,
+  registerSurvivorWithEmail,
   removeOrDeclineFriend,
+  resetSurvivorPassword,
   sendFriendRequestByCode,
   sendFriendRequestByUid,
   sendGlobalChatMessage,
   sendRoomChatMessage,
+  signInSurvivorWithEmail,
   signInSurvivorWithGoogle,
   signOutSurvivor,
   startMultiplayerRoom,
@@ -453,6 +456,36 @@ export default function App() {
     }
   };
 
+  const handleSignUpWithEmail = async (email: string, password: string, displayName: string) => {
+    setAuthError(null);
+    try {
+      await registerSurvivorWithEmail(email, password, displayName);
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : 'Could not create account.');
+      throw err;
+    }
+  };
+
+  const handleSignInWithEmail = async (email: string, password: string) => {
+    setAuthError(null);
+    try {
+      await signInSurvivorWithEmail(email, password);
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : 'Could not sign in.');
+      throw err;
+    }
+  };
+
+  const handleResetPassword = async (email: string) => {
+    setAuthError(null);
+    try {
+      await resetSurvivorPassword(email);
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : 'Could not send reset email.');
+      throw err;
+    }
+  };
+
   const handleSignOut = async () => {
     if (activeRoomId && profile) {
       await leaveMultiplayerRoom(activeRoomId, profile.uid);
@@ -649,6 +682,10 @@ export default function App() {
         authError={authError}
         profile={profile}
         onSignIn={handleSignIn}
+        onSignUpWithEmail={handleSignUpWithEmail}
+        onSignInWithEmail={handleSignInWithEmail}
+        onResetPassword={handleResetPassword}
+        onClearAuthError={() => setAuthError(null)}
         onSignOut={handleSignOut}
         onUpdateAccount={handleUpdateAccount}
         friends={friends}

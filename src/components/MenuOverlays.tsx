@@ -4,8 +4,11 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
+  Eye,
+  EyeOff,
   LogIn,
   LogOut,
+  Mail,
   MessageSquare,
   Monitor,
   Palette,
@@ -59,6 +62,10 @@ interface MenuOverlaysProps {
   authError: string | null;
   profile: SurvivorProfile | null;
   onSignIn: () => Promise<void>;
+  onSignUpWithEmail: (email: string, password: string, displayName: string) => Promise<void>;
+  onSignInWithEmail: (email: string, password: string) => Promise<void>;
+  onResetPassword: (email: string) => Promise<void>;
+  onClearAuthError: () => void;
   onSignOut: () => Promise<void>;
   onUpdateAccount: (updates: {
     displayName: string;
@@ -197,6 +204,10 @@ export const MenuOverlays: React.FC<MenuOverlaysProps> = ({
   authError,
   profile,
   onSignIn,
+  onSignUpWithEmail,
+  onSignInWithEmail,
+  onResetPassword,
+  onClearAuthError,
   onSignOut,
   onUpdateAccount,
   friends,
@@ -220,6 +231,14 @@ export const MenuOverlays: React.FC<MenuOverlaysProps> = ({
   onSendRoomChat,
 }) => {
   const [rightTab, setRightTab] = useState<RightTab>('coop');
+
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [authName, setAuthName] = useState('');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [resetSentMsg, setResetSentMsg] = useState<string | null>(null);
 
   const [nameDraft, setNameDraft] = useState(profile?.displayName || '');
   const [coatDraft, setCoatDraft] = useState(profile?.coatColor || COAT_COLORS[0].hex);
@@ -288,6 +307,45 @@ export const MenuOverlays: React.FC<MenuOverlaysProps> = ({
   const acceptedFriends = friends.filter((f) => f.status === 'accepted');
   const sentRequests = friends.filter((f) => f.status === 'pending_sent');
   const friendStatusMap = new Map(friends.map((f) => [f.friendUid, f.status]));
+
+  const handleSwitchAuthMode = (mode: 'login' | 'signup') => {
+    setAuthMode(mode);
+    setResetSentMsg(null);
+    onClearAuthError();
+  };
+
+  const handleEmailAuthSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (authBusy) return;
+    setResetSentMsg(null);
+    setAuthBusy(true);
+    try {
+      if (authMode === 'signup') {
+        await onSignUpWithEmail(authEmail, authPassword, authName);
+      } else {
+        await onSignInWithEmail(authEmail, authPassword);
+      }
+      setAuthPassword('');
+    } catch {
+      // authError is surfaced via App state
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleForgotPasswordClick = async () => {
+    if (authBusy) return;
+    setResetSentMsg(null);
+    setAuthBusy(true);
+    try {
+      await onResetPassword(authEmail);
+      setResetSentMsg('Password reset link sent! Check your email inbox.');
+    } catch {
+      // authError is surfaced via App state
+    } finally {
+      setAuthBusy(false);
+    }
+  };
 
   const handleSaveAccount = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -570,24 +628,174 @@ export const MenuOverlays: React.FC<MenuOverlaysProps> = ({
                 Checking survivor account...
               </div>
             ) : !profile ? (
-              <div className="flex-1 flex flex-col items-center justify-center text-center py-8 px-4 bg-[#050811]/70 border border-white/10 rounded-xl">
-                <Users className="w-9 h-9 text-red-400 mb-3" />
-                <h3 className="text-base font-semibold text-slate-100 mb-1.5">
-                  Create Your Survivor Account
-                </h3>
-                <p className="text-xs text-slate-400 max-w-sm mb-5 leading-relaxed">
-                  Sign in with Google to customize your winter parka, scarf & hat, add friends by code,
-                  level up across runs, and play online co-op.
-                </p>
-                <button
-                  type="button"
-                  onClick={onSignIn}
-                  className="flex items-center gap-2 px-5 py-2.5 bg-red-700 hover:bg-red-600 text-white text-sm font-semibold rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  <LogIn className="w-4 h-4" />
-                  <span>Sign in with Google</span>
-                </button>
-                {authError && <p className="mt-3 text-xs text-red-400 max-w-sm">{authError}</p>}
+              <div className="flex-1 flex flex-col justify-center py-5 px-4 sm:px-6 bg-[#050811]/70 border border-white/10 rounded-xl">
+                <div className="w-full max-w-md mx-auto">
+                  <div className="flex items-center gap-2.5 mb-2">
+                    <Users className="w-5 h-5 text-red-400 shrink-0" />
+                    <h3 className="text-base font-semibold text-slate-100">
+                      {authMode === 'signup' ? 'Create Your Survivor Account' : 'Sign In to Your Account'}
+                    </h3>
+                  </div>
+                  <p className="text-xs text-slate-400 mb-4 leading-relaxed">
+                    Customize your winter parka, scarf & hat, add friends by code, save your level XP,
+                    and play online co-op.
+                  </p>
+
+                  {/* Mode Switcher: Sign In vs Create Account */}
+                  <div className="grid grid-cols-2 gap-1 p-1 bg-[#080d1a] border border-white/10 rounded-lg mb-4">
+                    <button
+                      type="button"
+                      onClick={() => handleSwitchAuthMode('login')}
+                      className={`py-1.5 px-3 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                        authMode === 'login'
+                          ? 'bg-red-700 text-white'
+                          : 'text-slate-300 hover:text-white hover:bg-white/5'
+                      }`}
+                    >
+                      Sign In
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSwitchAuthMode('signup')}
+                      className={`py-1.5 px-3 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                        authMode === 'signup'
+                          ? 'bg-red-700 text-white'
+                          : 'text-slate-300 hover:text-white hover:bg-white/5'
+                      }`}
+                    >
+                      Create Account
+                    </button>
+                  </div>
+
+                  {/* Email & Password Form */}
+                  <form onSubmit={handleEmailAuthSubmit} className="space-y-3">
+                    {authMode === 'signup' && (
+                      <div>
+                        <label
+                          htmlFor="auth-survivor-name"
+                          className="block text-[11px] font-medium text-slate-300 mb-1"
+                        >
+                          Survivor Name
+                        </label>
+                        <input
+                          id="auth-survivor-name"
+                          type="text"
+                          required
+                          minLength={2}
+                          maxLength={24}
+                          autoComplete="nickname"
+                          value={authName}
+                          onChange={(e) => setAuthName(e.target.value)}
+                          placeholder="Enter your survivor name"
+                          className="w-full px-3 py-2 text-sm text-slate-100 bg-[#080d1a] border border-white/15 rounded-lg placeholder:text-slate-500 focus:outline-none focus:border-red-500"
+                        />
+                      </div>
+                    )}
+
+                    <div>
+                      <label
+                        htmlFor="auth-email"
+                        className="block text-[11px] font-medium text-slate-300 mb-1"
+                      >
+                        Email Address
+                      </label>
+                      <input
+                        id="auth-email"
+                        type="email"
+                        required
+                        autoComplete="email"
+                        value={authEmail}
+                        onChange={(e) => setAuthEmail(e.target.value)}
+                        placeholder="you@example.com"
+                        className="w-full px-3 py-2 text-sm text-slate-100 bg-[#080d1a] border border-white/15 rounded-lg placeholder:text-slate-500 focus:outline-none focus:border-red-500"
+                      />
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label
+                          htmlFor="auth-password"
+                          className="block text-[11px] font-medium text-slate-300"
+                        >
+                          Password
+                        </label>
+                        {authMode === 'login' && (
+                          <button
+                            type="button"
+                            onClick={handleForgotPasswordClick}
+                            disabled={authBusy}
+                            className="text-[11px] text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
+                          >
+                            Forgot password?
+                          </button>
+                        )}
+                      </div>
+                      <div className="relative">
+                        <input
+                          id="auth-password"
+                          type={showPassword ? 'text' : 'password'}
+                          required
+                          minLength={6}
+                          autoComplete={authMode === 'signup' ? 'new-password' : 'current-password'}
+                          value={authPassword}
+                          onChange={(e) => setAuthPassword(e.target.value)}
+                          placeholder={authMode === 'signup' ? 'At least 6 characters' : 'Enter password'}
+                          className="w-full pl-3 pr-10 py-2 text-sm text-slate-100 bg-[#080d1a] border border-white/15 rounded-lg placeholder:text-slate-500 focus:outline-none focus:border-red-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPassword((prev) => !prev)}
+                          aria-label={showPassword ? 'Hide password' : 'Show password'}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 p-1 cursor-pointer"
+                        >
+                          {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={authBusy}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-red-700 hover:bg-red-600 disabled:opacity-60 text-white text-sm font-semibold rounded-lg transition-colors cursor-pointer"
+                    >
+                      <Mail className="w-4 h-4" />
+                      <span>
+                        {authBusy
+                          ? authMode === 'signup'
+                            ? 'Creating Account...'
+                            : 'Signing In...'
+                          : authMode === 'signup'
+                            ? 'Create Account'
+                            : 'Sign In with Email'}
+                      </span>
+                    </button>
+                  </form>
+
+                  {resetSentMsg && (
+                    <p className="mt-2.5 text-xs text-emerald-400 leading-relaxed">{resetSentMsg}</p>
+                  )}
+                  {authError && (
+                    <p className="mt-2.5 text-xs text-red-400 leading-relaxed">{authError}</p>
+                  )}
+
+                  {/* Divider */}
+                  <div className="relative my-4 flex items-center">
+                    <div className="flex-grow border-t border-white/10" />
+                    <span className="px-3 text-[11px] uppercase tracking-wider text-slate-500">or</span>
+                    <div className="flex-grow border-t border-white/10" />
+                  </div>
+
+                  {/* Google Sign-In */}
+                  <button
+                    type="button"
+                    disabled={authBusy}
+                    onClick={onSignIn}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-900 hover:bg-slate-800 border border-white/15 disabled:opacity-60 text-slate-100 text-sm font-medium rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                  >
+                    <LogIn className="w-4 h-4 text-red-400" />
+                    <span>Continue with Google</span>
+                  </button>
+                </div>
               </div>
             ) : (
               <>
