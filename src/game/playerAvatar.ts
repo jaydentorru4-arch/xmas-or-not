@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { HatStyle, RoomPlayerData } from './types';
+import { buildWeaponCompositeMesh } from './props';
+import { HatStyle, RoomPlayerData, WeaponType } from './types';
 
 export interface RemoteSurvivorRig {
   uid: string;
@@ -9,35 +10,58 @@ export interface RemoteSurvivorRig {
   targetX: number;
   targetZ: number;
   targetYaw: number;
+  flashlightOn: boolean;
   alive: boolean;
   escaped: boolean;
+  stunned: boolean;
+  equippedWeapon: WeaponType | '';
+  shotCount: number;
   update: (dt: number, nowSec: number) => void;
-  syncFromData: (data: RoomPlayerData) => void;
+  syncFromData: (data: RoomPlayerData) => {
+    justCaught: boolean;
+    justEscaped: boolean;
+    justStunned: boolean;
+    justShot: boolean;
+    shotHit: boolean;
+  };
   dispose: () => void;
 }
 
-function createNameTagTexture(label: string, coatColor: string): THREE.CanvasTexture {
+function createNameTagTexture(
+  label: string,
+  coatColor: string,
+  statusBadge?: 'TRAPPED' | 'CAUGHT'
+): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
   canvas.width = 256;
   canvas.height = 64;
   const ctx = canvas.getContext('2d')!;
 
-  ctx.fillStyle = 'rgba(6, 9, 19, 0.85)';
+  ctx.fillStyle = statusBadge === 'TRAPPED'
+    ? 'rgba(124, 45, 18, 0.92)'
+    : statusBadge === 'CAUGHT'
+      ? 'rgba(127, 29, 29, 0.9)'
+      : 'rgba(6, 9, 19, 0.85)';
   ctx.beginPath();
   ctx.roundRect(12, 10, 232, 44, 10);
   ctx.fill();
 
-  ctx.strokeStyle = coatColor;
+  ctx.strokeStyle = statusBadge === 'TRAPPED'
+    ? '#f97316'
+    : statusBadge === 'CAUGHT'
+      ? '#ef4444'
+      : coatColor;
   ctx.lineWidth = 3;
   ctx.beginPath();
   ctx.roundRect(12, 10, 232, 44, 10);
   ctx.stroke();
 
-  ctx.font = '600 22px system-ui, sans-serif';
+  ctx.font = '600 20px system-ui, sans-serif';
   ctx.fillStyle = '#f8fafc';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(label.slice(0, 18), 128, 33);
+  const text = statusBadge ? `${label.slice(0, 11)} · ${statusBadge}` : label.slice(0, 18);
+  ctx.fillText(text, 128, 33);
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -46,7 +70,8 @@ function createNameTagTexture(label: string, coatColor: string): THREE.CanvasTex
 
 export function createRemoteSurvivor(
   initial: RoomPlayerData,
-  contactShadowTex: THREE.Texture
+  contactShadowTex: THREE.Texture,
+  candyCaneTex: THREE.Texture
 ): RemoteSurvivorRig {
   const root = new THREE.Group();
   root.position.set(initial.x, 0, initial.z);
@@ -57,6 +82,9 @@ export function createRemoteSurvivor(
     disposables.push(d);
     return d;
   };
+
+  const bodyGroup = new THREE.Group();
+  root.add(bodyGroup);
 
   const coatMat = track(
     new THREE.MeshStandardMaterial({
@@ -146,27 +174,27 @@ export function createRemoteSurvivor(
   };
   const leftLeg = makeLeg(-1);
   const rightLeg = makeLeg(1);
-  root.add(leftLeg, rightLeg);
+  bodyGroup.add(leftLeg, rightLeg);
 
   // Parka Torso & Backpack
   const torso = new THREE.Mesh(track(new THREE.CylinderGeometry(0.24, 0.28, 0.76, 10)), coatMat);
   torso.position.y = 1.14;
   torso.castShadow = true;
-  root.add(torso);
+  bodyGroup.add(torso);
 
   const scarf = new THREE.Mesh(track(new THREE.TorusGeometry(0.2, 0.06, 7, 12)), scarfMat);
   scarf.rotation.x = Math.PI / 2;
   scarf.position.y = 1.5;
-  root.add(scarf);
+  bodyGroup.add(scarf);
 
   const pack = new THREE.Mesh(track(new THREE.BoxGeometry(0.32, 0.42, 0.18)), darkPantsMat);
   pack.position.set(0, 1.18, -0.24);
-  root.add(pack);
+  bodyGroup.add(pack);
 
   // Head
   const head = new THREE.Mesh(track(new THREE.SphereGeometry(0.18, 10, 10)), skinMat);
   head.position.y = 1.68;
-  root.add(head);
+  bodyGroup.add(head);
 
   // Customizable Hats
   const hoodGroup = new THREE.Group();
@@ -177,7 +205,7 @@ export function createRemoteSurvivor(
   hood.position.set(0, 1.7, -0.02);
   hood.rotation.x = -0.25;
   hoodGroup.add(hood);
-  root.add(hoodGroup);
+  bodyGroup.add(hoodGroup);
 
   const beanieGroup = new THREE.Group();
   const beanieDome = new THREE.Mesh(
@@ -191,7 +219,7 @@ export function createRemoteSurvivor(
   const beaniePom = new THREE.Mesh(track(new THREE.SphereGeometry(0.055, 8, 8)), whiteFurMat);
   beaniePom.position.set(0, 1.94, 0);
   beanieGroup.add(beanieDome, beanieCuff, beaniePom);
-  root.add(beanieGroup);
+  bodyGroup.add(beanieGroup);
 
   const santaHatGroup = new THREE.Group();
   const sBrim = new THREE.Mesh(track(new THREE.TorusGeometry(0.19, 0.04, 7, 14)), whiteFurMat);
@@ -203,7 +231,7 @@ export function createRemoteSurvivor(
   const sPom = new THREE.Mesh(track(new THREE.SphereGeometry(0.05, 8, 8)), whiteFurMat);
   sPom.position.set(0, 2.11, -0.1);
   santaHatGroup.add(sBrim, sCone, sPom);
-  root.add(santaHatGroup);
+  bodyGroup.add(santaHatGroup);
 
   const ushankaGroup = new THREE.Group();
   const uCrown = new THREE.Mesh(track(new THREE.CylinderGeometry(0.19, 0.2, 0.2, 10)), coatMat);
@@ -215,7 +243,7 @@ export function createRemoteSurvivor(
   const uEarR = new THREE.Mesh(track(new THREE.BoxGeometry(0.07, 0.24, 0.16)), whiteFurMat);
   uEarR.position.set(0.2, 1.71, 0);
   ushankaGroup.add(uCrown, uFlapFront, uEarL, uEarR);
-  root.add(ushankaGroup);
+  bodyGroup.add(ushankaGroup);
 
   const applyHatStyle = (style: HatStyle) => {
     hoodGroup.visible = style === 'hood';
@@ -227,7 +255,7 @@ export function createRemoteSurvivor(
   // Right arm holding flashlight
   const flashlightTorch = new THREE.Group();
   flashlightTorch.position.set(0.3, 1.24, 0.22);
-  root.add(flashlightTorch);
+  bodyGroup.add(flashlightTorch);
 
   const torchBody = new THREE.Mesh(track(new THREE.CylinderGeometry(0.035, 0.035, 0.24, 8)), metalMat);
   torchBody.rotation.x = Math.PI / 2;
@@ -242,8 +270,77 @@ export function createRemoteSurvivor(
   torchLight.position.set(0, 0, 0.35);
   flashlightTorch.add(torchLight);
 
+  // Left arm weapon mount so teammates see equipped stun weapons
+  const weaponMount = new THREE.Group();
+  weaponMount.position.set(-0.32, 1.22, 0.22);
+  weaponMount.scale.setScalar(0.95);
+  bodyGroup.add(weaponMount);
+
+  let weaponDisposables: { dispose: () => void }[] = [];
+  let mountedWeaponType: WeaponType | '' = '';
+  const syncWeaponMesh = (type: WeaponType | '') => {
+    if (mountedWeaponType === type) return;
+    mountedWeaponType = type;
+    while (weaponMount.children.length > 0) {
+      weaponMount.remove(weaponMount.children[0]);
+    }
+    weaponDisposables.forEach((d) => d.dispose());
+    weaponDisposables = [];
+    if (!type) return;
+    const mesh = buildWeaponCompositeMesh(type, candyCaneTex, weaponDisposables);
+    if (type === 'candy_bat') {
+      mesh.rotation.set(0.55, 0, -0.2);
+    } else {
+      mesh.rotation.set(0, Math.PI, 0);
+    }
+    weaponMount.add(mesh);
+  };
+
+  // Remote shot tracer flash beam (in local forward Z+ of avatar)
+  const tracerGeo = track(
+    new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(-0.32, 1.24, 0.45),
+      new THREE.Vector3(-0.32, 1.24, 10.5),
+    ])
+  );
+  const tracerMat = track(
+    new THREE.LineBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.92 })
+  );
+  const shotTracer = new THREE.Line(tracerGeo, tracerMat);
+  shotTracer.visible = false;
+  root.add(shotTracer);
+  let shotFlashTimer = 0;
+
+  // Stunned / Trapped glowing ring around feet
+  const trapRingMat = track(
+    new THREE.MeshBasicMaterial({
+      color: 0xf97316,
+      transparent: true,
+      opacity: 0.85,
+      side: THREE.DoubleSide,
+    })
+  );
+  const trapRing = new THREE.Mesh(track(new THREE.RingGeometry(0.45, 0.62, 18)), trapRingMat);
+  trapRing.rotation.x = -Math.PI / 2;
+  trapRing.position.y = 0.04;
+  trapRing.visible = false;
+  root.add(trapRing);
+
+  // Fallen marker left behind when caught by Santa so teammates see where they fell
+  const fallenGroup = new THREE.Group();
+  const fallenTorch = new THREE.Mesh(track(new THREE.CylinderGeometry(0.05, 0.05, 0.34, 8)), metalMat);
+  fallenTorch.rotation.z = Math.PI / 2;
+  fallenTorch.rotation.y = 0.6;
+  fallenTorch.position.y = 0.06;
+  const fallenGlow = new THREE.PointLight(0xef4444, 1.4, 4.5, 1.6);
+  fallenGlow.position.set(0, 0.35, 0);
+  fallenGroup.add(fallenTorch, fallenGlow);
+  fallenGroup.visible = false;
+  root.add(fallenGroup);
+
   // Floating Name Sprite
-  const nameTex = track(createNameTagTexture(initial.displayName, initial.coatColor));
+  let currentNameKey = '';
+  let nameTex = createNameTagTexture(initial.displayName, initial.coatColor);
   const nameMat = track(
     new THREE.SpriteMaterial({
       map: nameTex,
@@ -256,6 +353,19 @@ export function createRemoteSurvivor(
   nameSprite.scale.set(1.4, 0.35, 1);
   root.add(nameSprite);
 
+  const refreshNameTag = (name: string, coat: string, badge?: 'TRAPPED' | 'CAUGHT') => {
+    const key = `${name}|${coat}|${badge || ''}`;
+    if (key === currentNameKey) return;
+    currentNameKey = key;
+    const oldTex = nameTex;
+    nameTex = createNameTagTexture(name, coat, badge);
+    nameMat.map = nameTex;
+    nameMat.needsUpdate = true;
+    oldTex.dispose();
+  };
+
+  let initialized = false;
+
   const rig: RemoteSurvivorRig = {
     uid: initial.uid,
     displayName: initial.displayName,
@@ -264,38 +374,104 @@ export function createRemoteSurvivor(
     targetX: initial.x,
     targetZ: initial.z,
     targetYaw: initial.yaw,
+    flashlightOn: initial.flashlightOn,
     alive: initial.alive,
     escaped: initial.escaped,
+    stunned: Boolean(initial.stunned),
+    equippedWeapon: initial.equippedWeapon || '',
+    shotCount: initial.shotCount || 0,
     syncFromData(data: RoomPlayerData) {
+      const prevAlive = this.alive;
+      const prevEscaped = this.escaped;
+      const prevStunned = this.stunned;
+      const prevShots = this.shotCount;
+
+      const justCaught = initialized && prevAlive && !data.alive;
+      const justEscaped = initialized && !prevEscaped && data.escaped;
+      const justStunned = initialized && !prevStunned && Boolean(data.stunned);
+      const justShot = initialized && (data.shotCount || 0) > prevShots;
+
       this.displayName = data.displayName;
       this.coatColorHex = data.coatColor || '#3b82f6';
       this.targetX = data.x;
       this.targetZ = data.z;
       this.targetYaw = data.yaw;
+      this.flashlightOn = Boolean(data.flashlightOn);
       this.alive = data.alive;
       this.escaped = data.escaped;
+      this.stunned = Boolean(data.stunned);
+      this.equippedWeapon = data.equippedWeapon || '';
+      this.shotCount = data.shotCount || 0;
+
       coatMat.color.set(data.coatColor || '#3b82f6');
       scarfMat.color.set(data.scarfColor || '#e2e8f0');
       applyHatStyle(data.hatStyle || 'hood');
+      syncWeaponMesh(this.equippedWeapon);
+
       torchLight.intensity = data.flashlightOn && data.alive ? 1.8 : 0;
       torchLens.visible = data.flashlightOn && data.alive;
-      root.visible = data.alive && !data.escaped;
+
+      bodyGroup.visible = data.alive && !data.escaped;
+      fallenGroup.visible = !data.alive && !data.escaped;
+      trapRing.visible = data.alive && !data.escaped && this.stunned;
+      root.visible = !data.escaped;
+
+      const badge: 'TRAPPED' | 'CAUGHT' | undefined = !data.alive
+        ? 'CAUGHT'
+        : this.stunned
+          ? 'TRAPPED'
+          : undefined;
+      refreshNameTag(data.displayName, this.coatColorHex, badge);
+      nameSprite.position.y = data.alive ? 2.25 : 0.75;
+
+      if (justShot) {
+        shotFlashTimer = 0.22;
+        shotTracer.visible = true;
+      }
+
+      initialized = true;
+      return {
+        justCaught,
+        justEscaped,
+        justStunned,
+        justShot,
+        shotHit: Boolean(data.lastShotHit),
+      };
     },
     update(dt: number, nowSec: number) {
       const prevX = root.position.x;
       const prevZ = root.position.z;
-      root.position.x = THREE.MathUtils.damp(root.position.x, this.targetX, 10, dt);
-      root.position.z = THREE.MathUtils.damp(root.position.z, this.targetZ, 10, dt);
+      root.position.x = THREE.MathUtils.damp(root.position.x, this.targetX, 11, dt);
+      root.position.z = THREE.MathUtils.damp(root.position.z, this.targetZ, 11, dt);
 
       const desiredRotY = this.targetYaw + Math.PI;
       let deltaYaw = desiredRotY - root.rotation.y;
       while (deltaYaw > Math.PI) deltaYaw -= Math.PI * 2;
       while (deltaYaw < -Math.PI) deltaYaw += Math.PI * 2;
-      root.rotation.y += deltaYaw * Math.min(1, dt * 10);
+      root.rotation.y += deltaYaw * Math.min(1, dt * 11);
+
+      if (shotFlashTimer > 0) {
+        shotFlashTimer -= dt;
+        if (shotFlashTimer <= 0) {
+          shotTracer.visible = false;
+        }
+      }
+
+      if (this.stunned && this.alive) {
+        bodyGroup.position.y = -0.18 + Math.sin(nowSec * 18) * 0.02;
+        trapRingMat.opacity = 0.55 + Math.sin(nowSec * 10) * 0.35;
+        trapRing.rotation.z = nowSec * 2.5;
+      } else {
+        bodyGroup.position.y = THREE.MathUtils.damp(bodyGroup.position.y, 0, 10, dt);
+      }
+
+      if (!this.alive) {
+        fallenGlow.intensity = 0.7 + Math.sin(nowSec * 6) * 0.55;
+      }
 
       const moveDist = Math.hypot(root.position.x - prevX, root.position.z - prevZ);
       const speed = moveDist / Math.max(0.001, dt);
-      if (speed > 0.25) {
+      if (speed > 0.25 && this.alive && !this.stunned) {
         const swing = Math.sin(nowSec * 11) * 0.45;
         leftLeg.rotation.x = swing;
         rightLeg.rotation.x = -swing;
@@ -305,6 +481,8 @@ export function createRemoteSurvivor(
       }
     },
     dispose() {
+      nameTex.dispose();
+      weaponDisposables.forEach((d) => d.dispose());
       disposables.forEach((d) => d.dispose());
     },
   };

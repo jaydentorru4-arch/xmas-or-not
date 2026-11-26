@@ -20,6 +20,8 @@ import {
 } from './game/types';
 import {
   acceptFriendRequest,
+  advanceRoomWeaponWave,
+  claimRoomHost,
   collectRoomBattery,
   collectRoomOrnament,
   collectRoomWeapon,
@@ -50,6 +52,7 @@ import {
   syncHostSantaState,
   syncLocalPlayerState,
   triggerRoomSantaStun,
+  triggerRoomTrap,
   updateSurvivorAccount,
 } from './services/multiplayer';
 
@@ -294,17 +297,29 @@ export default function App() {
               onCollectBattery: (batteryId) => {
                 collectRoomBattery(room.roomId, batteryId);
               },
+              onTriggerTrap: (trapId) => {
+                triggerRoomTrap(room.roomId, trapId);
+              },
+              onAdvanceWeaponWave: (waveIndex) => {
+                advanceRoomWeaponWave(room.roomId, waveIndex);
+              },
+              onClaimHost: () => {
+                void claimRoomHost(room.roomId, profile);
+              },
               onTriggerSantaStun: () => {
                 triggerRoomSantaStun(room.roomId);
               },
             },
           });
         }
+        engineRef.current?.setRoomHostStatus(room.hostId === profile.uid);
         engineRef.current?.applyRoomState(
           room.collectedOrnaments,
           room.exitUnlocked,
           room.collectedWeapons ?? [],
           room.collectedBatteries ?? [],
+          room.triggeredTraps ?? [],
+          room.weaponWave ?? 0,
           room.santaStunNonce ?? 0
         );
       }

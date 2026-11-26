@@ -87,23 +87,57 @@ function drawMazeToCanvas(
 
   // Other Players
   for (const p of mapState.otherPlayers) {
-    if (!p.alive && !p.escaped) continue;
     const px = p.normX * pxSize;
     const py = p.normZ * pxSize;
     const pR = Math.max(3.5, cellPx * 0.46);
+
+    if (!p.alive && !p.escaped) {
+      // Caught teammate marker (muted red X)
+      ctx.strokeStyle = '#ef4444';
+      ctx.lineWidth = 1.6;
+      const xr = Math.max(3, pR * 0.85);
+      ctx.beginPath();
+      ctx.moveTo(px - xr, py - xr);
+      ctx.lineTo(px + xr, py + xr);
+      ctx.moveTo(px + xr, py - xr);
+      ctx.lineTo(px - xr, py + xr);
+      ctx.stroke();
+
+      if (detailed) {
+        ctx.font = '600 9px sans-serif';
+        ctx.fillStyle = '#fca5a5';
+        ctx.textAlign = 'center';
+        ctx.fillText(`${p.displayName.slice(0, 8)} (CAUGHT)`, px, py - pR - 4);
+      }
+      continue;
+    }
+
     ctx.fillStyle = p.coatColor;
     ctx.beginPath();
     ctx.arc(px, py, pR, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 1.3;
+    ctx.strokeStyle = p.stunned ? '#f97316' : '#ffffff';
+    ctx.lineWidth = p.stunned ? 2.1 : 1.3;
     ctx.stroke();
+
+    if (p.stunned) {
+      ctx.beginPath();
+      ctx.arc(px, py, pR + 2.5, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(249, 115, 22, 0.85)';
+      ctx.lineWidth = 1.3;
+      ctx.stroke();
+    }
 
     if (detailed) {
       ctx.font = '600 10px sans-serif';
-      ctx.fillStyle = '#e2e8f0';
+      ctx.fillStyle = p.stunned ? '#fdba74' : '#e2e8f0';
       ctx.textAlign = 'center';
-      ctx.fillText(p.displayName.slice(0, 10), px, py - pR - 4);
+      const label = p.stunned
+        ? `${p.displayName.slice(0, 8)} [TRAPPED]`
+        : p.escaped
+        ? `${p.displayName.slice(0, 8)} [SAFE]`
+        : p.displayName.slice(0, 10);
+      ctx.fillText(label, px, py - pR - 4);
     }
   }
 

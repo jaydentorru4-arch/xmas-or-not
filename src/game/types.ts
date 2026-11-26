@@ -231,6 +231,8 @@ export interface GameRoomData {
   collectedOrnaments: number[];
   collectedWeapons: number[];
   collectedBatteries: number[];
+  triggeredTraps: number[];
+  weaponWave: number;
   santaStunNonce: number;
   ornamentsTotal: number;
   exitUnlocked: boolean;
@@ -252,6 +254,10 @@ export interface RoomPlayerData {
   flashlightOn: boolean;
   alive: boolean;
   escaped: boolean;
+  stunned: boolean;
+  equippedWeapon: WeaponType | '';
+  shotCount: number;
+  lastShotHit: boolean;
 }
 
 export interface SantaLiveData {
@@ -261,6 +267,7 @@ export interface SantaLiveData {
   speed: number;
   alerted: boolean;
   stunRemaining: number;
+  updatedAtMs?: number;
 }
 
 export interface ChatMessageData {
@@ -280,6 +287,7 @@ export interface MapMarkerPlayer {
   normZ: number;
   alive: boolean;
   escaped: boolean;
+  stunned?: boolean;
 }
 
 export interface MazeMapState {

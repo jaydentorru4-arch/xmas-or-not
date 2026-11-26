@@ -135,14 +135,14 @@ service cloud.firestore {
       return data.keys().hasAll([
           'roomId', 'name', 'hostId', 'hostName', 'difficulty', 'level', 'mazeSeed',
           'status', 'collectedOrnaments', 'collectedWeapons', 'collectedBatteries',
-          'santaStunNonce', 'ornamentsTotal', 'exitUnlocked', 'isPublic', 'playerCount',
-          'createdAt', 'updatedAt'
+          'triggeredTraps', 'weaponWave', 'santaStunNonce', 'ornamentsTotal',
+          'exitUnlocked', 'isPublic', 'playerCount', 'createdAt', 'updatedAt'
         ])
         && data.keys().hasOnly([
           'roomId', 'name', 'hostId', 'hostName', 'difficulty', 'level', 'mazeSeed',
           'status', 'collectedOrnaments', 'collectedWeapons', 'collectedBatteries',
-          'santaStunNonce', 'ornamentsTotal', 'exitUnlocked', 'isPublic', 'playerCount',
-          'createdAt', 'updatedAt'
+          'triggeredTraps', 'weaponWave', 'santaStunNonce', 'ornamentsTotal',
+          'exitUnlocked', 'isPublic', 'playerCount', 'createdAt', 'updatedAt'
         ])
         && isValidId(data.roomId)
         && data.roomId.size() >= 4 && data.roomId.size() <= 32
@@ -165,6 +165,11 @@ service cloud.firestore {
         && data.collectedBatteries is list
         && data.collectedBatteries.size() <= 30
         && (data.collectedBatteries.size() == 0 || data.collectedBatteries[0] is number)
+        && data.triggeredTraps is list
+        && data.triggeredTraps.size() <= 20
+        && (data.triggeredTraps.size() == 0 || data.triggeredTraps[0] is number)
+        && data.weaponWave is number
+        && data.weaponWave >= 0 && data.weaponWave <= 50
         && data.santaStunNonce is number
         && data.santaStunNonce >= 0 && data.santaStunNonce <= 10000
         && data.ornamentsTotal is number
@@ -180,11 +185,13 @@ service cloud.firestore {
     function isValidRoomPlayer(data) {
       return data.keys().hasAll([
           'uid', 'roomId', 'displayName', 'coatColor', 'scarfColor', 'hatStyle',
-          'x', 'z', 'yaw', 'flashlightOn', 'alive', 'escaped', 'updatedAt'
+          'x', 'z', 'yaw', 'flashlightOn', 'alive', 'escaped',
+          'stunned', 'equippedWeapon', 'shotCount', 'lastShotHit', 'updatedAt'
         ])
         && data.keys().hasOnly([
           'uid', 'roomId', 'displayName', 'coatColor', 'scarfColor', 'hatStyle',
-          'x', 'z', 'yaw', 'flashlightOn', 'alive', 'escaped', 'updatedAt'
+          'x', 'z', 'yaw', 'flashlightOn', 'alive', 'escaped',
+          'stunned', 'equippedWeapon', 'shotCount', 'lastShotHit', 'updatedAt'
         ])
         && isValidId(data.uid)
         && data.uid == request.auth.uid
@@ -203,6 +210,12 @@ service cloud.firestore {
         && data.flashlightOn is bool
         && data.alive is bool
         && data.escaped is bool
+        && data.stunned is bool
+        && data.equippedWeapon is string
+        && data.equippedWeapon in ['', 'tranq_dart', 'cryo_blaster', 'candy_bat']
+        && data.shotCount is number
+        && data.shotCount >= 0 && data.shotCount <= 10000
+        && data.lastShotHit is bool
         && data.updatedAt is timestamp;
     }
 
@@ -367,7 +380,6 @@ service cloud.firestore {
         && isValidRoom(incoming())
         && existing().status != 'finished'
         && incoming().roomId == existing().roomId
-        && incoming().hostId == existing().hostId
         && incoming().mazeSeed == existing().mazeSeed
         && incoming().difficulty == existing().difficulty
         && incoming().level == existing().level
@@ -375,22 +387,42 @@ service cloud.firestore {
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && (
-          // Action 1: Host controls match lifecycle
+          // Action 1: Host controls match lifecycle & weapon waves
           (
             existing().hostId == request.auth.uid
+            && incoming().hostId == existing().hostId
             && incoming().diff(existing()).affectedKeys().hasOnly([
               'status', 'playerCount', 'collectedOrnaments', 'collectedWeapons',
-              'collectedBatteries', 'santaStunNonce', 'exitUnlocked', 'updatedAt'
+              'collectedBatteries', 'triggeredTraps', 'weaponWave',
+              'santaStunNonce', 'exitUnlocked', 'updatedAt'
             ])
           )
           ||
-          // Action 2: Joined survivor collects ornaments, weapons, batteries, triggers stun, or updates headcount
+          // Action 2: Joined survivor collects ornaments, weapons, batteries, triggers traps, stuns Santa, or updates headcount
           (
-            exists(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid))
+            incoming().hostId == existing().hostId
+            && exists(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid))
             && incoming().diff(existing()).affectedKeys().hasOnly([
               'playerCount', 'collectedOrnaments', 'collectedWeapons',
-              'collectedBatteries', 'santaStunNonce', 'exitUnlocked', 'updatedAt'
+              'collectedBatteries', 'triggeredTraps', 'santaStunNonce', 'exitUnlocked', 'updatedAt'
             ])
+          )
+          ||
+          // Action 3: Host handoff when current host transfers or disconnects
+          (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'hostId', 'hostName', 'playerCount', 'updatedAt'
+            ])
+            && exists(/databases/$(database)/documents/rooms/$(roomId)/players/$(incoming().hostId))
+            && (
+              existing().hostId == request.auth.uid
+              ||
+              (
+                !exists(/databases/$(database)/documents/rooms/$(roomId)/players/$(existing().hostId))
+                && exists(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid))
+                && incoming().hostId == request.auth.uid
+              )
+            )
           )
         );
       allow delete: if isSignedIn() && isValidId(roomId) && existing().hostId == request.auth.uid;
@@ -418,7 +450,8 @@ service cloud.firestore {
           && incoming().updatedAt == request.time
           && incoming().diff(existing()).affectedKeys().hasOnly([
             'displayName', 'coatColor', 'scarfColor', 'hatStyle',
-            'x', 'z', 'yaw', 'flashlightOn', 'alive', 'escaped', 'updatedAt'
+            'x', 'z', 'yaw', 'flashlightOn', 'alive', 'escaped',
+            'stunned', 'equippedWeapon', 'shotCount', 'lastShotHit', 'updatedAt'
           ]);
         allow delete: if isOwner(playerId) && isValidId(roomId) && isValidId(playerId);
       }

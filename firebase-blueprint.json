@@ -277,6 +277,12 @@
         "collectedBatteries": {
           "type": "array"
         },
+        "triggeredTraps": {
+          "type": "array"
+        },
+        "weaponWave": {
+          "type": "number"
+        },
         "santaStunNonce": {
           "type": "number"
         },
@@ -313,6 +319,8 @@
         "collectedOrnaments",
         "collectedWeapons",
         "collectedBatteries",
+        "triggeredTraps",
+        "weaponWave",
         "santaStunNonce",
         "ornamentsTotal",
         "exitUnlocked",
@@ -374,6 +382,19 @@
         "escaped": {
           "type": "boolean"
         },
+        "stunned": {
+          "type": "boolean"
+        },
+        "equippedWeapon": {
+          "type": "string",
+          "enum": ["", "tranq_dart", "cryo_blaster", "candy_bat"]
+        },
+        "shotCount": {
+          "type": "number"
+        },
+        "lastShotHit": {
+          "type": "boolean"
+        },
         "updatedAt": {
           "type": "string",
           "format": "date-time"
@@ -392,6 +413,10 @@
         "flashlightOn",
         "alive",
         "escaped",
+        "stunned",
+        "equippedWeapon",
+        "shotCount",
+        "lastShotHit",
         "updatedAt"
       ]
     },

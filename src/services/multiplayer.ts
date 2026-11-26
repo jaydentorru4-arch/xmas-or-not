@@ -12,9 +12,11 @@ import {
   deleteDoc,
   doc,
   getDoc,
+  getDocs,
   limit,
   onSnapshot,
   query,
+  runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -28,6 +30,7 @@ import {
   handleFirestoreError,
   OperationType,
 } from '../firebase';
+import { CELL_SIZE, cellToWorld } from '../game/maze';
 import {
   applyXpGain,
   ChatMessageData,
@@ -43,7 +46,13 @@ import {
   SantaLiveData,
   SCARF_COLORS,
   SurvivorProfile,
+  WeaponType,
 } from '../game/types';
+
+function sanitizeEquippedWeapon(raw: unknown): WeaponType | '' {
+  if (raw === 'tranq_dart' || raw === 'cryo_blaster' || raw === 'candy_bat') return raw;
+  return '';
+}
 
 function sanitizeDisplayName(raw: string): string {
   const cleaned = raw.trim().replace(/\s+/g, ' ').slice(0, 24);
@@ -687,6 +696,8 @@ export function subscribePublicRooms(
             collectedOrnaments: Array.isArray(d.collectedOrnaments) ? d.collectedOrnaments.map(Number) : [],
             collectedWeapons: Array.isArray(d.collectedWeapons) ? d.collectedWeapons.map(Number) : [],
             collectedBatteries: Array.isArray(d.collectedBatteries) ? d.collectedBatteries.map(Number) : [],
+            triggeredTraps: Array.isArray(d.triggeredTraps) ? d.triggeredTraps.map(Number) : [],
+            weaponWave: Math.max(0, Math.min(50, Number(d.weaponWave || 0))),
             santaStunNonce: Number(d.santaStunNonce || 0),
             ornamentsTotal: Number(d.ornamentsTotal || 5),
             exitUnlocked: Boolean(d.exitUnlocked),
@@ -715,7 +726,9 @@ export async function createMultiplayerRoom(
   const finalName = cleanName.length >= 2 ? cleanName : 'North Pole Room';
   const cleanLevel = Math.max(1, Math.min(50, Math.floor(level || 1)));
   const mazeSeed = Math.floor(100000 + Math.random() * 899999);
-  const ornamentsTotal = getLevelScaling(cleanLevel, difficulty).ornamentCount;
+  const scaling = getLevelScaling(cleanLevel, difficulty);
+  const ornamentsTotal = scaling.ornamentCount;
+  const spawnW = cellToWorld(1, 1, scaling.mazeSize, CELL_SIZE);
 
   const roomPath = `rooms/${roomId}`;
   const playerPath = `rooms/${roomId}/players/${profile.uid}`;
@@ -734,6 +747,8 @@ export async function createMultiplayerRoom(
       collectedOrnaments: [],
       collectedWeapons: [],
       collectedBatteries: [],
+      triggeredTraps: [],
+      weaponWave: 0,
       santaStunNonce: 0,
       ornamentsTotal,
       exitUnlocked: false,
@@ -754,12 +769,16 @@ export async function createMultiplayerRoom(
       coatColor: sanitizeCoatColor(profile.coatColor),
       scarfColor: sanitizeScarfColor(profile.scarfColor),
       hatStyle: sanitizeHatStyle(profile.hatStyle),
-      x: 0,
-      z: 0,
+      x: Number(spawnW.x.toFixed(2)),
+      z: Number(spawnW.z.toFixed(2)),
       yaw: 0,
       flashlightOn: true,
       alive: true,
       escaped: false,
+      stunned: false,
+      equippedWeapon: '',
+      shotCount: 0,
+      lastShotHit: false,
       updatedAt: serverTimestamp(),
     });
   } catch (error) {
@@ -792,6 +811,8 @@ export async function createMultiplayerRoom(
     collectedOrnaments: [],
     collectedWeapons: [],
     collectedBatteries: [],
+    triggeredTraps: [],
+    weaponWave: 0,
     santaStunNonce: 0,
     ornamentsTotal,
     exitUnlocked: false,
@@ -820,6 +841,11 @@ export async function joinMultiplayerRoom(
       throw new Error(`Room "${roomId}" has already ended.`);
     }
 
+    const level = Math.max(1, Math.min(50, Number(d.level || 1)));
+    const difficulty: DifficultyId = d.difficulty === 'nightmare' ? 'nightmare' : 'normal';
+    const scaling = getLevelScaling(level, difficulty);
+    const spawnW = cellToWorld(1, 1, scaling.mazeSize, CELL_SIZE);
+
     const playerRef = doc(db, 'rooms', roomId, 'players', profile.uid);
     const existingPlayer = await getDoc(playerRef);
 
@@ -830,12 +856,16 @@ export async function joinMultiplayerRoom(
       coatColor: sanitizeCoatColor(profile.coatColor),
       scarfColor: sanitizeScarfColor(profile.scarfColor),
       hatStyle: sanitizeHatStyle(profile.hatStyle),
-      x: 0,
-      z: 0,
+      x: Number(spawnW.x.toFixed(2)),
+      z: Number(spawnW.z.toFixed(2)),
       yaw: 0,
       flashlightOn: true,
       alive: true,
       escaped: false,
+      stunned: false,
+      equippedWeapon: '',
+      shotCount: 0,
+      lastShotHit: false,
       updatedAt: serverTimestamp(),
     });
 
@@ -851,13 +881,15 @@ export async function joinMultiplayerRoom(
       name: String(d.name || 'North Pole Room'),
       hostId: String(d.hostId || ''),
       hostName: String(d.hostName || 'Host'),
-      difficulty: d.difficulty === 'nightmare' ? 'nightmare' : 'normal',
-      level: Math.max(1, Math.min(50, Number(d.level || 1))),
+      difficulty,
+      level,
       mazeSeed: Number(d.mazeSeed || 1),
       status: (d.status as GameRoomData['status']) || 'waiting',
       collectedOrnaments: Array.isArray(d.collectedOrnaments) ? d.collectedOrnaments.map(Number) : [],
       collectedWeapons: Array.isArray(d.collectedWeapons) ? d.collectedWeapons.map(Number) : [],
       collectedBatteries: Array.isArray(d.collectedBatteries) ? d.collectedBatteries.map(Number) : [],
+      triggeredTraps: Array.isArray(d.triggeredTraps) ? d.triggeredTraps.map(Number) : [],
+      weaponWave: Math.max(0, Math.min(50, Number(d.weaponWave || 0))),
       santaStunNonce: Number(d.santaStunNonce || 0),
       ornamentsTotal: Number(d.ornamentsTotal || 5),
       exitUnlocked: Boolean(d.exitUnlocked),
@@ -887,15 +919,57 @@ export async function leaveMultiplayerRoom(roomId: string, uid: string): Promise
       const d = snap.data();
       if (d.status !== 'finished') {
         const nextCount = Math.max(0, Number(d.playerCount || 1) - 1);
-        await updateDoc(roomRef, {
-          playerCount: nextCount,
-          updatedAt: serverTimestamp(),
-        });
+        if (d.hostId === uid && nextCount > 0) {
+          const playersSnap = await getDocs(
+            query(collection(db, 'rooms', roomId, 'players'), where('roomId', '==', roomId))
+          );
+          const nextHostDoc = playersSnap.docs.find((p) => p.id !== uid);
+          if (nextHostDoc) {
+            const hd = nextHostDoc.data();
+            await updateDoc(roomRef, {
+              hostId: nextHostDoc.id,
+              hostName: sanitizeDisplayName(String(hd.displayName || 'Survivor')),
+              playerCount: nextCount,
+              updatedAt: serverTimestamp(),
+            });
+          } else {
+            await updateDoc(roomRef, {
+              playerCount: nextCount,
+              updatedAt: serverTimestamp(),
+            });
+          }
+        } else {
+          await updateDoc(roomRef, {
+            playerCount: nextCount,
+            updatedAt: serverTimestamp(),
+          });
+        }
       }
     }
     await deleteDoc(playerRef);
   } catch {
     // Ignore cleanup race if room already deleted
+  }
+}
+
+export async function claimRoomHost(roomId: string, profile: SurvivorProfile): Promise<boolean> {
+  try {
+    const roomRef = doc(db, 'rooms', roomId);
+    const snap = await getDoc(roomRef);
+    if (!snap.exists()) return false;
+    const d = snap.data();
+    if (d.status === 'finished' || d.hostId === profile.uid) return d.hostId === profile.uid;
+    const oldHostPlayerSnap = await getDoc(doc(db, 'rooms', roomId, 'players', String(d.hostId || '')));
+    if (oldHostPlayerSnap.exists()) return false;
+    await updateDoc(roomRef, {
+      hostId: profile.uid,
+      hostName: sanitizeDisplayName(profile.displayName),
+      playerCount: Math.max(1, Number(d.playerCount || 1)),
+      updatedAt: serverTimestamp(),
+    });
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -930,17 +1004,19 @@ export async function collectRoomOrnament(
   const path = `rooms/${roomId}`;
   try {
     const roomRef = doc(db, 'rooms', roomId);
-    const snap = await getDoc(roomRef);
-    if (!snap.exists()) return;
-    const d = snap.data();
-    if (d.status === 'finished') return;
-    const current: number[] = Array.isArray(d.collectedOrnaments) ? d.collectedOrnaments.map(Number) : [];
-    if (current.includes(ornamentId)) return;
-    const next = [...current, ornamentId].slice(0, 12);
-    await updateDoc(roomRef, {
-      collectedOrnaments: next,
-      exitUnlocked: next.length >= ornamentsTotal,
-      updatedAt: serverTimestamp(),
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(roomRef);
+      if (!snap.exists()) return;
+      const d = snap.data();
+      if (d.status === 'finished') return;
+      const current: number[] = Array.isArray(d.collectedOrnaments) ? d.collectedOrnaments.map(Number) : [];
+      if (current.includes(ornamentId)) return;
+      const next = [...current, ornamentId].slice(0, 12);
+      tx.update(roomRef, {
+        collectedOrnaments: next,
+        exitUnlocked: next.length >= ornamentsTotal,
+        updatedAt: serverTimestamp(),
+      });
     });
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
@@ -951,16 +1027,18 @@ export async function collectRoomWeapon(roomId: string, weaponId: number): Promi
   const path = `rooms/${roomId}`;
   try {
     const roomRef = doc(db, 'rooms', roomId);
-    const snap = await getDoc(roomRef);
-    if (!snap.exists()) return;
-    const d = snap.data();
-    if (d.status === 'finished') return;
-    const current: number[] = Array.isArray(d.collectedWeapons) ? d.collectedWeapons.map(Number) : [];
-    if (current.includes(weaponId)) return;
-    const next = [...current, weaponId].slice(-40);
-    await updateDoc(roomRef, {
-      collectedWeapons: next,
-      updatedAt: serverTimestamp(),
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(roomRef);
+      if (!snap.exists()) return;
+      const d = snap.data();
+      if (d.status === 'finished') return;
+      const current: number[] = Array.isArray(d.collectedWeapons) ? d.collectedWeapons.map(Number) : [];
+      if (current.includes(weaponId)) return;
+      const next = [...current, weaponId].slice(-40);
+      tx.update(roomRef, {
+        collectedWeapons: next,
+        updatedAt: serverTimestamp(),
+      });
     });
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
@@ -971,19 +1049,55 @@ export async function collectRoomBattery(roomId: string, batteryId: number): Pro
   const path = `rooms/${roomId}`;
   try {
     const roomRef = doc(db, 'rooms', roomId);
-    const snap = await getDoc(roomRef);
-    if (!snap.exists()) return;
-    const d = snap.data();
-    if (d.status === 'finished') return;
-    const current: number[] = Array.isArray(d.collectedBatteries) ? d.collectedBatteries.map(Number) : [];
-    if (current.includes(batteryId)) return;
-    const next = [...current, batteryId].slice(-30);
-    await updateDoc(roomRef, {
-      collectedBatteries: next,
-      updatedAt: serverTimestamp(),
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(roomRef);
+      if (!snap.exists()) return;
+      const d = snap.data();
+      if (d.status === 'finished') return;
+      const current: number[] = Array.isArray(d.collectedBatteries) ? d.collectedBatteries.map(Number) : [];
+      if (current.includes(batteryId)) return;
+      const next = [...current, batteryId].slice(-30);
+      tx.update(roomRef, {
+        collectedBatteries: next,
+        updatedAt: serverTimestamp(),
+      });
     });
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function triggerRoomTrap(roomId: string, trapId: number): Promise<void> {
+  const path = `rooms/${roomId}`;
+  try {
+    const roomRef = doc(db, 'rooms', roomId);
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(roomRef);
+      if (!snap.exists()) return;
+      const d = snap.data();
+      if (d.status === 'finished') return;
+      const current: number[] = Array.isArray(d.triggeredTraps) ? d.triggeredTraps.map(Number) : [];
+      if (current.includes(trapId)) return;
+      const next = [...current, trapId].slice(0, 20);
+      tx.update(roomRef, {
+        triggeredTraps: next,
+        updatedAt: serverTimestamp(),
+      });
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function advanceRoomWeaponWave(roomId: string, wave: number): Promise<void> {
+  const cleanWave = Math.max(0, Math.min(50, Math.floor(wave)));
+  try {
+    await updateDoc(doc(db, 'rooms', roomId), {
+      weaponWave: cleanWave,
+      updatedAt: serverTimestamp(),
+    });
+  } catch {
+    // Non-fatal if room finished
   }
 }
 
@@ -991,14 +1105,16 @@ export async function triggerRoomSantaStun(roomId: string): Promise<void> {
   const path = `rooms/${roomId}`;
   try {
     const roomRef = doc(db, 'rooms', roomId);
-    const snap = await getDoc(roomRef);
-    if (!snap.exists()) return;
-    const d = snap.data();
-    if (d.status === 'finished') return;
-    const nextNonce = Math.min(10000, Number(d.santaStunNonce || 0) + 1);
-    await updateDoc(roomRef, {
-      santaStunNonce: nextNonce,
-      updatedAt: serverTimestamp(),
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(roomRef);
+      if (!snap.exists()) return;
+      const d = snap.data();
+      if (d.status === 'finished') return;
+      const nextNonce = Math.min(10000, Number(d.santaStunNonce || 0) + 1);
+      tx.update(roomRef, {
+        santaStunNonce: nextNonce,
+        updatedAt: serverTimestamp(),
+      });
     });
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
@@ -1015,6 +1131,10 @@ export async function syncLocalPlayerState(
     flashlightOn: boolean;
     alive: boolean;
     escaped: boolean;
+    stunned: boolean;
+    equippedWeapon: WeaponType | '';
+    shotCount: number;
+    lastShotHit: boolean;
   }
 ): Promise<void> {
   try {
@@ -1029,6 +1149,10 @@ export async function syncLocalPlayerState(
       flashlightOn: state.flashlightOn,
       alive: state.alive,
       escaped: state.escaped,
+      stunned: state.stunned,
+      equippedWeapon: sanitizeEquippedWeapon(state.equippedWeapon),
+      shotCount: Math.max(0, Math.min(10000, Math.floor(state.shotCount || 0))),
+      lastShotHit: Boolean(state.lastShotHit),
       updatedAt: serverTimestamp(),
     });
   } catch {
@@ -1080,6 +1204,8 @@ export function subscribeRoom(
         collectedOrnaments: Array.isArray(d.collectedOrnaments) ? d.collectedOrnaments.map(Number) : [],
         collectedWeapons: Array.isArray(d.collectedWeapons) ? d.collectedWeapons.map(Number) : [],
         collectedBatteries: Array.isArray(d.collectedBatteries) ? d.collectedBatteries.map(Number) : [],
+        triggeredTraps: Array.isArray(d.triggeredTraps) ? d.triggeredTraps.map(Number) : [],
+        weaponWave: Math.max(0, Math.min(50, Number(d.weaponWave || 0))),
         santaStunNonce: Number(d.santaStunNonce || 0),
         ornamentsTotal: Number(d.ornamentsTotal || 5),
         exitUnlocked: Boolean(d.exitUnlocked),
@@ -1115,6 +1241,10 @@ export function subscribeRoomPlayers(
           flashlightOn: Boolean(d.flashlightOn),
           alive: d.alive !== false,
           escaped: Boolean(d.escaped),
+          stunned: Boolean(d.stunned),
+          equippedWeapon: sanitizeEquippedWeapon(d.equippedWeapon),
+          shotCount: Number(d.shotCount || 0),
+          lastShotHit: Boolean(d.lastShotHit),
         };
       });
       onPlayers(list);
@@ -1140,6 +1270,7 @@ export function subscribeRoomSanta(
         speed: Number(d.speed || 0),
         alerted: Boolean(d.alerted),
         stunRemaining: Number(d.stunRemaining || 0),
+        updatedAtMs: Date.now(),
       });
     },
     (error) => handleFirestoreError(error, OperationType.GET, path)
