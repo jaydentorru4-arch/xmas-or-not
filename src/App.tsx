@@ -64,7 +64,7 @@ function loadLocalProgression(): { level: number; xp: number } {
     if (!raw) return { level: 1, xp: 0 };
     const parsed = JSON.parse(raw) as { level?: number; xp?: number };
     return {
-      level: Math.max(1, Math.min(50, Number(parsed.level || 1))),
+      level: Math.max(1, Math.min(99, Number(parsed.level || 1))),
       xp: Math.max(0, Number(parsed.xp || 0)),
     };
   } catch {
@@ -456,7 +456,7 @@ export default function App() {
   };
 
   const handleStartSolo = (levelOverride?: number) => {
-    const lvl = levelOverride !== undefined ? Math.max(1, Math.min(50, levelOverride)) : selectedLevel;
+    const lvl = levelOverride !== undefined ? Math.max(1, Math.min(99, levelOverride)) : selectedLevel;
     setSelectedLevel(lvl);
     setMapExpanded(false);
     engineRef.current?.startNewGame(selectedDifficulty, lvl);

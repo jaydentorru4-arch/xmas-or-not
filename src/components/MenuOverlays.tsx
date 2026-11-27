@@ -508,8 +508,8 @@ export const MenuOverlays: React.FC<MenuOverlaysProps> = ({
               {/* Difficulty Selector */}
               <div className="mb-5">
                 <div className="text-xs font-medium text-slate-400 mb-1.5">Difficulty</div>
-                <div className="grid grid-cols-2 gap-2 p-1 bg-[#050811] border border-white/10 rounded-lg">
-                  {(['normal', 'nightmare'] as DifficultyId[]).map((id) => {
+                <div className="grid grid-cols-3 gap-1.5 p-1 bg-[#050811] border border-white/10 rounded-lg">
+                  {(['normal', 'nightmare', 'insane'] as DifficultyId[]).map((id) => {
                     const cfg = DIFFICULTIES[id];
                     const active = selectedDifficulty === id;
                     return (
@@ -517,13 +517,13 @@ export const MenuOverlays: React.FC<MenuOverlaysProps> = ({
                         key={id}
                         type="button"
                         onClick={() => onSelectDifficulty(id)}
-                        className={`px-4 py-2 text-sm font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                        className={`px-2.5 py-2 text-xs font-medium rounded-md transition-colors truncate cursor-pointer ${
                           active
-                            ? 'bg-red-700 text-white'
+                            ? 'bg-red-700 text-white shadow-lg shadow-red-900/40'
                             : 'text-slate-300 hover:text-white hover:bg-white/5'
                         }`}
                       >
-                        {cfg.label}
+                        {cfg.label.split(' ')[0]}
                       </button>
                     );
                   })}
@@ -533,13 +533,26 @@ export const MenuOverlays: React.FC<MenuOverlaysProps> = ({
                 </p>
               </div>
 
-              <button
-                type="button"
-                onClick={() => onStartSolo(selectedLevel)}
-                className="w-full py-3 px-6 bg-red-700 hover:bg-red-600 text-white text-base font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer"
-              >
-                Play Level {selectedLevel} Solo
-              </button>
+              <div className="flex flex-col gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => onStartSolo(selectedLevel)}
+                  className="w-full py-3 px-6 bg-red-700 hover:bg-red-600 text-white text-base font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer shadow-lg shadow-red-900/30"
+                >
+                  Play Level {selectedLevel} Solo
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSelectDifficulty('insane');
+                    onSelectLevel(99);
+                    onStartSolo(99);
+                  }}
+                  className="w-full py-2.5 px-5 bg-gradient-to-r from-red-900 via-rose-800 to-amber-900 hover:from-red-800 hover:to-amber-800 text-amber-200 text-xs font-bold rounded-lg transition-all tracking-wide uppercase border border-red-500/40 shadow-xl shadow-red-950/60 cursor-pointer flex items-center justify-center gap-2"
+                >
+                  <span>🔥 Play Level 99 Insane Abyss (Ultimate Hardcore)</span>
+                </button>
+              </div>
             </div>
 
             <div className="mt-5 pt-3.5 border-t border-white/10 flex flex-col gap-2.5 text-xs text-slate-400">
@@ -1543,7 +1556,7 @@ export const MenuOverlays: React.FC<MenuOverlaysProps> = ({
   }
 
   // Escaped / Victory
-  const nextSoloLevel = Math.min(50, hud.level + 1);
+  const nextSoloLevel = Math.min(99, hud.level + 1);
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#041410]/86 px-6">
       <div className="max-w-md w-full bg-[#071210]/96 border border-emerald-400/35 rounded-xl p-8 text-center">

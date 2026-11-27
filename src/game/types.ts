@@ -1,6 +1,6 @@
 export type GamePhase = 'menu' | 'waiting' | 'playing' | 'paused' | 'caught' | 'escaped';
 
-export type DifficultyId = 'normal' | 'nightmare';
+export type DifficultyId = 'normal' | 'nightmare' | 'insane';
 
 export type HatStyle = 'hood' | 'beanie' | 'santa_hat' | 'ushanka';
 
@@ -61,11 +61,21 @@ export const DIFFICULTIES: Record<DifficultyId, DifficultyConfig> = {
     fogDensity: 0.086,
     ornamentCount: 6,
   },
+  insane: {
+    id: 'insane',
+    label: 'Insane (The Abyss)',
+    description: 'Pitch-black freezing fog, supersonic Krampus Santa, lethal elf traps & relentless tracking.',
+    santaBaseSpeed: 3.3,
+    santaChaseSpeed: 4.95,
+    santaSightRange: 25,
+    fogDensity: 0.115,
+    ornamentCount: 11,
+  },
 };
 
 export interface LevelScaling {
   level: number;
-  mazeSize: number; // always odd (23..35)
+  mazeSize: number; // always odd (23..45)
   ornamentCount: number;
   batteryCount: number;
   santaBaseSpeed: number;
@@ -76,16 +86,16 @@ export interface LevelScaling {
 }
 
 export function getLevelScaling(level: number, difficulty: DifficultyId): LevelScaling {
-  const lvl = Math.max(1, Math.min(50, Math.floor(level || 1)));
+  const lvl = Math.max(1, Math.min(99, Math.floor(level || 1)));
   const base = DIFFICULTIES[difficulty];
-  // Odd maze sizes growing from 23x23 at Lv1 up to 35x35 at Lv7+
-  const sizeSteps = [23, 25, 27, 29, 31, 33, 35];
-  const mazeSize = sizeSteps[Math.min(sizeSteps.length - 1, lvl - 1)];
-  const ornamentCount = Math.min(11, base.ornamentCount + Math.floor((lvl - 1) * 0.7));
-  const batteryCount = Math.min(10, 5 + Math.floor((lvl - 1) * 0.6));
-  const speedBonus = Math.min(0.85, (lvl - 1) * 0.11);
-  const sightBonus = Math.min(5.0, (lvl - 1) * 0.65);
-  const fogBonus = Math.min(0.022, (lvl - 1) * 0.0028);
+  // Odd maze sizes growing from 23x23 at Lv1 up to 45x45 at Lv99
+  const sizeSteps = [23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45];
+  const mazeSize = sizeSteps[Math.min(sizeSteps.length - 1, Math.floor((lvl - 1) / 9))];
+  const ornamentCount = Math.min(18, base.ornamentCount + Math.floor((lvl - 1) * 0.12));
+  const batteryCount = Math.min(14, 5 + Math.floor((lvl - 1) * 0.09));
+  const speedBonus = Math.min(1.5, (lvl - 1) * 0.016);
+  const sightBonus = Math.min(9.0, (lvl - 1) * 0.09);
+  const fogBonus = Math.min(0.045, (lvl - 1) * 0.00045);
 
   const tierNames = [
     'Snowdrift Hollow',
@@ -94,8 +104,12 @@ export function getLevelScaling(level: number, difficulty: DifficultyId): LevelS
     'Black Ice Thicket',
     'Krampus Crossing',
     'Polar Abyss',
+    'Frostfang Crypt',
+    'Glacial Void',
+    'The Frozen Hell',
+    'Krampus Throneroom',
   ];
-  const tierName = tierNames[Math.min(tierNames.length - 1, Math.floor((lvl - 1) / 2))];
+  const tierName = tierNames[Math.min(tierNames.length - 1, Math.floor((lvl - 1) / 10))];
 
   return {
     level: lvl,
@@ -112,7 +126,7 @@ export function getLevelScaling(level: number, difficulty: DifficultyId): LevelS
 
 export function xpForNextLevel(level: number): number {
   const lvl = Math.max(1, Math.floor(level || 1));
-  return 100 + (lvl - 1) * 75;
+  return 100 + (lvl - 1) * 55;
 }
 
 export function applyXpGain(
@@ -120,11 +134,11 @@ export function applyXpGain(
   currentXp: number,
   earnedXp: number
 ): { level: number; xp: number; leveledUp: boolean } {
-  let lvl = Math.max(1, Math.min(50, Math.floor(currentLevel || 1)));
+  let lvl = Math.max(1, Math.min(99, Math.floor(currentLevel || 1)));
   let xp = Math.max(0, Math.floor((currentXp || 0) + earnedXp));
   const startLvl = lvl;
 
-  while (lvl < 50 && xp >= xpForNextLevel(lvl)) {
+  while (lvl < 99 && xp >= xpForNextLevel(lvl)) {
     xp -= xpForNextLevel(lvl);
     lvl += 1;
   }

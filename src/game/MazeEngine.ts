@@ -522,7 +522,7 @@ export class MazeEngine {
     this.clearMazeGroup();
     this.setEquippedWeapon(null);
     if (levelOverride !== undefined) {
-      this.level = Math.max(1, Math.min(50, Math.floor(levelOverride)));
+      this.level = Math.max(1, Math.min(99, Math.floor(levelOverride)));
     }
 
     const scaling = getLevelScaling(this.level, this.difficulty);
@@ -784,7 +784,7 @@ export class MazeEngine {
 
   public startNewGame(difficulty: DifficultyId, level = 1): void {
     this.difficulty = difficulty;
-    this.level = Math.max(1, Math.min(50, Math.floor(level || 1)));
+    this.level = Math.max(1, Math.min(99, Math.floor(level || 1)));
     this.isMultiplayer = false;
     this.roomId = null;
     this.isHost = false;
@@ -815,7 +815,7 @@ export class MazeEngine {
     localUid: string
   ): void {
     this.difficulty = difficulty;
-    this.level = Math.max(1, Math.min(50, Math.floor(level || 1)));
+    this.level = Math.max(1, Math.min(99, Math.floor(level || 1)));
     this.isMultiplayer = true;
     this.roomId = roomId;
     this.isHost = isHost;
@@ -887,7 +887,7 @@ export class MazeEngine {
     callbacks: MultiplayerEngineCallbacks;
   }): void {
     this.difficulty = cfg.difficulty;
-    this.level = Math.max(1, Math.min(50, Math.floor(cfg.level || 1)));
+    this.level = Math.max(1, Math.min(99, Math.floor(cfg.level || 1)));
     this.isMultiplayer = true;
     this.roomId = cfg.roomId;
     this.isHost = cfg.isHost;
@@ -1138,7 +1138,7 @@ export class MazeEngine {
   public setDifficulty(difficulty: DifficultyId, level?: number): void {
     this.difficulty = difficulty;
     if (level !== undefined) {
-      this.level = Math.max(1, Math.min(50, Math.floor(level)));
+      this.level = Math.max(1, Math.min(99, Math.floor(level)));
     }
     if (this.fog) {
       this.fog.density = getLevelScaling(this.level, difficulty).fogDensity;
@@ -1147,7 +1147,7 @@ export class MazeEngine {
   }
 
   public setSelectedLevel(level: number): void {
-    this.level = Math.max(1, Math.min(50, Math.floor(level || 1)));
+    this.level = Math.max(1, Math.min(99, Math.floor(level || 1)));
     if (this.fog) {
       this.fog.density = getLevelScaling(this.level, this.difficulty).fogDensity;
     }

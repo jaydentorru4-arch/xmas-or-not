@@ -275,7 +275,7 @@ export async function loadOrCreateSurvivorProfile(user: User): Promise<SurvivorP
         scarfColor: sanitizeScarfColor(String(d.scarfColor || SCARF_COLORS[0].hex)),
         hatStyle: sanitizeHatStyle(String(d.hatStyle || 'hood')),
         friendCode,
-        level: Math.max(1, Math.min(50, Number(d.level || 1))),
+        level: Math.max(1, Math.min(99, Number(d.level || 1))),
         xp: Math.max(0, Number(d.xp || 0)),
         escapes: Math.max(0, Number(d.escapes || 0)),
         gamesPlayed: Math.max(0, Number(d.gamesPlayed || 0)),
@@ -388,7 +388,7 @@ export async function updateSurvivorAccount(
       scarfColor: cleanScarf,
       hatStyle: cleanHat,
       friendCode: String(d.friendCode || deriveFriendCode(uid)),
-      level: Math.max(1, Math.min(50, Number(d.level || 1))),
+      level: Math.max(1, Math.min(99, Number(d.level || 1))),
       xp: Math.max(0, Number(d.xp || 0)),
       escapes: Number(d.escapes || 0),
       gamesPlayed: Number(d.gamesPlayed || 0),
@@ -421,7 +421,7 @@ export async function recordMatchOutcome(
     const snap = await getDoc(ref);
     if (!snap.exists()) return null;
     const d = snap.data();
-    const prevLevel = Math.max(1, Math.min(50, Number(d.level || 1)));
+    const prevLevel = Math.max(1, Math.min(99, Number(d.level || 1)));
     const prevXp = Math.max(0, Number(d.xp || 0));
     const progressed = applyXpGain(prevLevel, prevXp, earnedXp);
     const nextEscapes = Number(d.escapes || 0) + (escaped ? 1 : 0);
@@ -466,7 +466,7 @@ export function subscribeFriends(
           scarfColor: sanitizeScarfColor(String(d.scarfColor || SCARF_COLORS[0].hex)),
           hatStyle: sanitizeHatStyle(String(d.hatStyle || 'hood')),
           friendCode: String(d.friendCode || ''),
-          level: Math.max(1, Math.min(50, Number(d.level || 1))),
+          level: Math.max(1, Math.min(99, Number(d.level || 1))),
           status: (d.status as FriendStatus) || 'accepted',
         };
       });
@@ -500,7 +500,7 @@ export async function sendFriendRequestByUid(
   const targetScarf = sanitizeScarfColor(String(td.scarfColor || SCARF_COLORS[0].hex));
   const targetHat = sanitizeHatStyle(String(td.hatStyle || 'hood'));
   const targetCode = String(td.friendCode || deriveFriendCode(targetUid));
-  const targetLevel = Math.max(1, Math.min(50, Number(td.level || 1)));
+  const targetLevel = Math.max(1, Math.min(99, Number(td.level || 1)));
 
   const myFriendRef = doc(db, 'users', myProfile.uid, 'friends', targetUid);
   const myExisting = await getDoc(myFriendRef);
@@ -542,7 +542,7 @@ export async function sendFriendRequestByUid(
       scarfColor: sanitizeScarfColor(myProfile.scarfColor),
       hatStyle: sanitizeHatStyle(myProfile.hatStyle),
       friendCode: myProfile.friendCode,
-      level: Math.max(1, Math.min(50, myProfile.level)),
+      level: Math.max(1, Math.min(99, myProfile.level)),
       status: 'pending_received',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
@@ -586,7 +586,7 @@ export async function acceptFriendRequest(
       coatColor: sanitizeCoatColor(String(td.coatColor || COAT_COLORS[0].hex)),
       scarfColor: sanitizeScarfColor(String(td.scarfColor || SCARF_COLORS[0].hex)),
       hatStyle: sanitizeHatStyle(String(td.hatStyle || 'hood')),
-      level: Math.max(1, Math.min(50, Number(td.level || 1))),
+      level: Math.max(1, Math.min(99, Number(td.level || 1))),
       updatedAt: serverTimestamp(),
     });
   } catch (error) {
@@ -601,7 +601,7 @@ export async function acceptFriendRequest(
       coatColor: sanitizeCoatColor(myProfile.coatColor),
       scarfColor: sanitizeScarfColor(myProfile.scarfColor),
       hatStyle: sanitizeHatStyle(myProfile.hatStyle),
-      level: Math.max(1, Math.min(50, myProfile.level)),
+      level: Math.max(1, Math.min(99, myProfile.level)),
       updatedAt: serverTimestamp(),
     });
   } catch {
@@ -690,14 +690,14 @@ export function subscribePublicRooms(
             hostId: String(d.hostId || ''),
             hostName: String(d.hostName || 'Host'),
             difficulty: d.difficulty === 'nightmare' ? ('nightmare' as DifficultyId) : ('normal' as DifficultyId),
-            level: Math.max(1, Math.min(50, Number(d.level || 1))),
+            level: Math.max(1, Math.min(99, Number(d.level || 1))),
             mazeSeed: Number(d.mazeSeed || 1),
             status: (d.status as GameRoomData['status']) || 'waiting',
             collectedOrnaments: Array.isArray(d.collectedOrnaments) ? d.collectedOrnaments.map(Number) : [],
             collectedWeapons: Array.isArray(d.collectedWeapons) ? d.collectedWeapons.map(Number) : [],
             collectedBatteries: Array.isArray(d.collectedBatteries) ? d.collectedBatteries.map(Number) : [],
             triggeredTraps: Array.isArray(d.triggeredTraps) ? d.triggeredTraps.map(Number) : [],
-            weaponWave: Math.max(0, Math.min(50, Number(d.weaponWave || 0))),
+            weaponWave: Math.max(0, Math.min(99, Number(d.weaponWave || 0))),
             santaStunNonce: Number(d.santaStunNonce || 0),
             ornamentsTotal: Number(d.ornamentsTotal || 5),
             exitUnlocked: Boolean(d.exitUnlocked),
@@ -724,7 +724,7 @@ export async function createMultiplayerRoom(
   const roomId = generateRoomId();
   const cleanName = roomName.trim().slice(0, 40) || `${profile.displayName}'s Maze`;
   const finalName = cleanName.length >= 2 ? cleanName : 'North Pole Room';
-  const cleanLevel = Math.max(1, Math.min(50, Math.floor(level || 1)));
+  const cleanLevel = Math.max(1, Math.min(99, Math.floor(level || 1)));
   const mazeSeed = Math.floor(100000 + Math.random() * 899999);
   const scaling = getLevelScaling(cleanLevel, difficulty);
   const ornamentsTotal = scaling.ornamentCount;
@@ -841,8 +841,8 @@ export async function joinMultiplayerRoom(
       throw new Error(`Room "${roomId}" has already ended.`);
     }
 
-    const level = Math.max(1, Math.min(50, Number(d.level || 1)));
-    const difficulty: DifficultyId = d.difficulty === 'nightmare' ? 'nightmare' : 'normal';
+    const level = Math.max(1, Math.min(99, Number(d.level || 1)));
+    const difficulty: DifficultyId = d.difficulty === 'nightmare' ? 'nightmare' : d.difficulty === 'insane' ? 'insane' : 'normal';
     const scaling = getLevelScaling(level, difficulty);
     const spawnW = cellToWorld(1, 1, scaling.mazeSize, CELL_SIZE);
 
@@ -889,7 +889,7 @@ export async function joinMultiplayerRoom(
       collectedWeapons: Array.isArray(d.collectedWeapons) ? d.collectedWeapons.map(Number) : [],
       collectedBatteries: Array.isArray(d.collectedBatteries) ? d.collectedBatteries.map(Number) : [],
       triggeredTraps: Array.isArray(d.triggeredTraps) ? d.triggeredTraps.map(Number) : [],
-      weaponWave: Math.max(0, Math.min(50, Number(d.weaponWave || 0))),
+      weaponWave: Math.max(0, Math.min(99, Number(d.weaponWave || 0))),
       santaStunNonce: Number(d.santaStunNonce || 0),
       ornamentsTotal: Number(d.ornamentsTotal || 5),
       exitUnlocked: Boolean(d.exitUnlocked),
@@ -914,30 +914,25 @@ export async function leaveMultiplayerRoom(roomId: string, uid: string): Promise
   const roomRef = doc(db, 'rooms', roomId);
   const playerRef = doc(db, 'rooms', roomId, 'players', uid);
   try {
-    const snap = await getDoc(roomRef);
-    if (snap.exists()) {
-      const d = snap.data();
-      if (d.status !== 'finished') {
-        const nextCount = Math.max(0, Number(d.playerCount || 1) - 1);
-        if (d.hostId === uid && nextCount > 0) {
-          const playersSnap = await getDocs(
-            query(collection(db, 'rooms', roomId, 'players'), where('roomId', '==', roomId))
-          );
-          const nextHostDoc = playersSnap.docs.find((p) => p.id !== uid);
-          if (nextHostDoc) {
-            const hd = nextHostDoc.data();
-            await updateDoc(roomRef, {
-              hostId: nextHostDoc.id,
-              hostName: sanitizeDisplayName(String(hd.displayName || 'Survivor')),
-              playerCount: nextCount,
-              updatedAt: serverTimestamp(),
-            });
-          } else {
-            await updateDoc(roomRef, {
-              playerCount: nextCount,
-              updatedAt: serverTimestamp(),
-            });
-          }
+    await deleteDoc(playerRef);
+    const playersSnap = await getDocs(collection(db, 'rooms', roomId, 'players'));
+    const remainingPlayers = playersSnap.docs;
+    if (remainingPlayers.length === 0) {
+      await deleteDoc(roomRef);
+    } else {
+      const snap = await getDoc(roomRef);
+      if (snap.exists()) {
+        const d = snap.data();
+        const nextCount = remainingPlayers.length;
+        if (d.hostId === uid) {
+          const nextHostDoc = remainingPlayers[0];
+          const hd = nextHostDoc.data();
+          await updateDoc(roomRef, {
+            hostId: nextHostDoc.id,
+            hostName: sanitizeDisplayName(String(hd.displayName || 'Survivor')),
+            playerCount: nextCount,
+            updatedAt: serverTimestamp(),
+          });
         } else {
           await updateDoc(roomRef, {
             playerCount: nextCount,
@@ -946,7 +941,6 @@ export async function leaveMultiplayerRoom(roomId: string, uid: string): Promise
         }
       }
     }
-    await deleteDoc(playerRef);
   } catch {
     // Ignore cleanup race if room already deleted
   }
@@ -1090,7 +1084,7 @@ export async function triggerRoomTrap(roomId: string, trapId: number): Promise<v
 }
 
 export async function advanceRoomWeaponWave(roomId: string, wave: number): Promise<void> {
-  const cleanWave = Math.max(0, Math.min(50, Math.floor(wave)));
+  const cleanWave = Math.max(0, Math.min(99, Math.floor(wave)));
   try {
     await updateDoc(doc(db, 'rooms', roomId), {
       weaponWave: cleanWave,
@@ -1197,15 +1191,15 @@ export function subscribeRoom(
         name: String(d.name || 'North Pole Room'),
         hostId: String(d.hostId || ''),
         hostName: String(d.hostName || 'Host'),
-        difficulty: d.difficulty === 'nightmare' ? 'nightmare' : 'normal',
-        level: Math.max(1, Math.min(50, Number(d.level || 1))),
+        difficulty: d.difficulty === 'nightmare' ? 'nightmare' : d.difficulty === 'insane' ? 'insane' : 'normal',
+        level: Math.max(1, Math.min(99, Number(d.level || 1))),
         mazeSeed: Number(d.mazeSeed || 1),
         status: (d.status as GameRoomData['status']) || 'waiting',
         collectedOrnaments: Array.isArray(d.collectedOrnaments) ? d.collectedOrnaments.map(Number) : [],
         collectedWeapons: Array.isArray(d.collectedWeapons) ? d.collectedWeapons.map(Number) : [],
         collectedBatteries: Array.isArray(d.collectedBatteries) ? d.collectedBatteries.map(Number) : [],
         triggeredTraps: Array.isArray(d.triggeredTraps) ? d.triggeredTraps.map(Number) : [],
-        weaponWave: Math.max(0, Math.min(50, Number(d.weaponWave || 0))),
+        weaponWave: Math.max(0, Math.min(99, Number(d.weaponWave || 0))),
         santaStunNonce: Number(d.santaStunNonce || 0),
         ornamentsTotal: Number(d.ornamentsTotal || 5),
         exitUnlocked: Boolean(d.exitUnlocked),
