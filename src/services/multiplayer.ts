@@ -239,7 +239,6 @@ export async function loadOrCreateSurvivorProfile(user: User): Promise<SurvivorP
     chosenPendingName || user.displayName || (user.email ? user.email.split('@')[0] : 'Survivor')
   );
   const publicPath = `users/${user.uid}/public/profile`;
-  const privatePath = `users/${user.uid}/private/info`;
 
   // Ensure private PII record exists
   try {
@@ -424,12 +423,13 @@ export async function recordMatchOutcome(
     const prevLevel = Math.max(1, Math.min(99, Number(d.level || 1)));
     const prevXp = Math.max(0, Number(d.xp || 0));
     const progressed = applyXpGain(prevLevel, prevXp, earnedXp);
-    const nextEscapes = Number(d.escapes || 0) + (escaped ? 1 : 0);
-    const nextGames = Number(d.gamesPlayed || 0) + 1;
+    const nextXp = Math.min(1000000, progressed.xp);
+    const nextEscapes = Math.min(100000, Number(d.escapes || 0) + (escaped ? 1 : 0));
+    const nextGames = Math.min(100000, Number(d.gamesPlayed || 0) + 1);
 
     await updateDoc(ref, {
       level: progressed.level,
-      xp: progressed.xp,
+      xp: nextXp,
       escapes: nextEscapes,
       gamesPlayed: nextGames,
       updatedAt: serverTimestamp(),
@@ -437,6 +437,7 @@ export async function recordMatchOutcome(
 
     return {
       ...progressed,
+      xp: nextXp,
       escapes: nextEscapes,
       gamesPlayed: nextGames,
     };
@@ -657,9 +658,7 @@ export async function clearGlobalChat(): Promise<void> {
   try {
     const q = query(collection(db, 'globalChat'), where('channel', '==', 'global'));
     const snap = await getDocs(q);
-    for (const d of snap.docs) {
-      await deleteDoc(d.ref);
-    }
+    await Promise.allSettled(snap.docs.map((d) => deleteDoc(d.ref)));
   } catch {
     // ignore
   }
@@ -932,7 +931,8 @@ export async function joinMultiplayerRoom(
       throw error;
     }
     handleFirestoreError(error, OperationType.WRITE, roomPath);
-    throw new Error('Firestore quota exceeded. Unable to join room.');
+    const message = error instanceof Error ? error.message : 'Unable to join room.';
+    throw new Error(message);
   }
 }
 

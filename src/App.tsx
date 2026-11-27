@@ -27,7 +27,6 @@ import {
   collectRoomOrnament,
   collectRoomWeapon,
   createMultiplayerRoom,
-  finishMultiplayerRoom,
   joinMultiplayerRoom,
   leaveMultiplayerRoom,
   loadOrCreateSurvivorProfile,
@@ -162,6 +161,8 @@ export default function App() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<SurvivorProfile | null>(null);
+  const profileRef = useRef<SurvivorProfile | null>(null);
+  profileRef.current = profile;
 
   // Friends State
   const [friends, setFriends] = useState<FriendRecord[]>([]);
@@ -241,14 +242,14 @@ export default function App() {
 
   // Subscribe to Global Chat & Open Public Rooms when signed in and in Menu
   useEffect(() => {
-    if (!user || !profile || activeRoomId) return;
+    if (!user || !profile?.uid || activeRoomId) return;
     const unsubChat = subscribeGlobalChat(setGlobalChat);
     const unsubRooms = subscribePublicRooms(setPublicRooms);
     return () => {
       unsubChat();
       unsubRooms();
     };
-  }, [user, profile, activeRoomId]);
+  }, [user?.uid, profile?.uid, activeRoomId]);
 
   // Ensure leaveMultiplayerRoom runs on window unload or page close
   useEffect(() => {
@@ -266,9 +267,12 @@ export default function App() {
 
   // Subscribe to Active Room state, players, Santa, and room chat
   useEffect(() => {
-    if (!activeRoomId || !profile) return;
+    const activeProfile = profileRef.current;
+    if (!activeRoomId || !activeProfile) return;
 
     const unsubRoom = subscribeRoom(activeRoomId, (room) => {
+      const latestProfile = profileRef.current;
+      if (!latestProfile) return;
       setActiveRoom(room);
       if (!room) {
         startedRoomKeyRef.current = null;
@@ -285,8 +289,8 @@ export default function App() {
             room.level,
             room.mazeSeed,
             room.roomId,
-            room.hostId === profile.uid,
-            profile.uid
+            room.hostId === latestProfile.uid,
+            latestProfile.uid
           );
         }
       } else if (room.status === 'playing') {
@@ -299,11 +303,12 @@ export default function App() {
             level: room.level,
             mazeSeed: room.mazeSeed,
             roomId: room.roomId,
-            isHost: room.hostId === profile.uid,
-            localUid: profile.uid,
+            isHost: room.hostId === latestProfile.uid,
+            localUid: latestProfile.uid,
             callbacks: {
               onLocalPlayerSync: (state) => {
-                syncLocalPlayerState(room.roomId, profile, state);
+                const p = profileRef.current;
+                if (p) syncLocalPlayerState(room.roomId, p, state);
               },
               onHostSantaSync: (santaState) => {
                 syncHostSantaState(room.roomId, santaState);
@@ -324,18 +329,20 @@ export default function App() {
                 advanceRoomWeaponWave(room.roomId, waveIndex);
               },
               onClaimHost: () => {
-                void claimRoomHost(room.roomId, profile);
+                const p = profileRef.current;
+                if (p) void claimRoomHost(room.roomId, p);
               },
               onTriggerSantaStun: () => {
                 triggerRoomSantaStun(room.roomId);
               },
               onReviveTeammate: (targetUid) => {
-                void reviveRoomPlayer(room.roomId, targetUid, profile.displayName);
+                const p = profileRef.current;
+                if (p) void reviveRoomPlayer(room.roomId, targetUid, p.displayName);
               },
             },
           });
         }
-        engineRef.current?.setRoomHostStatus(room.hostId === profile.uid);
+        engineRef.current?.setRoomHostStatus(room.hostId === latestProfile.uid);
         engineRef.current?.applyRoomState(
           room.collectedOrnaments,
           room.exitUnlocked,
@@ -375,7 +382,7 @@ export default function App() {
       unsubSanta();
       unsubChat();
     };
-  }, [activeRoomId, profile]);
+  }, [activeRoomId, profile?.uid]);
 
   // Record match outcome & grant XP/Level progression once per finished match
   useEffect(() => {
@@ -536,12 +543,16 @@ export default function App() {
   };
 
   const handleSignOut = async () => {
-    if (activeRoomId && profile) {
-      await leaveMultiplayerRoom(activeRoomId, profile.uid);
-      setActiveRoomId(null);
-      setActiveRoom(null);
-      startedRoomKeyRef.current = null;
-      engineRef.current?.returnToMenu();
+    const leavingRoomId = activeRoomId;
+    const myUid = profile?.uid;
+    startedRoomKeyRef.current = null;
+    setActiveRoomId(null);
+    setActiveRoom(null);
+    setRoomPlayers([]);
+    setRoomChat([]);
+    engineRef.current?.returnToMenu();
+    if (leavingRoomId && myUid) {
+      await leaveMultiplayerRoom(leavingRoomId, myUid);
     }
     await signOutSurvivor();
   };
@@ -629,18 +640,17 @@ export default function App() {
   };
 
   const handleLeaveRoom = async () => {
-    if (activeRoomId && profile) {
-      if (activeRoom?.hostId === profile.uid && activeRoom.playerCount <= 1) {
-        await finishMultiplayerRoom(activeRoomId);
-      }
-      await leaveMultiplayerRoom(activeRoomId, profile.uid);
-    }
+    const leavingRoomId = activeRoomId;
+    const myUid = profile?.uid;
     startedRoomKeyRef.current = null;
     setActiveRoomId(null);
     setActiveRoom(null);
     setRoomPlayers([]);
     setRoomChat([]);
     engineRef.current?.returnToMenu();
+    if (leavingRoomId && myUid) {
+      await leaveMultiplayerRoom(leavingRoomId, myUid);
+    }
   };
 
   const handleStartRoomMatch = async () => {

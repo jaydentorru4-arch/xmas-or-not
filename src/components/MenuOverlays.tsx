@@ -261,9 +261,14 @@ export const MenuOverlays: React.FC<MenuOverlaysProps> = ({
 
   const [globalMsgDraft, setGlobalMsgDraft] = useState('');
   const [roomMsgDraft, setRoomMsgDraft] = useState('');
+  const [levelInputDraft, setLevelInputDraft] = useState(String(selectedLevel));
 
   const globalChatScrollRef = useRef<HTMLDivElement | null>(null);
   const roomChatScrollRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setLevelInputDraft(String(selectedLevel));
+  }, [selectedLevel]);
 
   useEffect(() => {
     if (profile) {
@@ -494,12 +499,17 @@ export const MenuOverlays: React.FC<MenuOverlaysProps> = ({
                           type="number"
                           min={1}
                           max={99}
-                          value={selectedLevel}
+                          value={levelInputDraft}
                           onChange={(e) => {
-                            const val = parseInt(e.target.value, 10);
+                            const raw = e.target.value;
+                            setLevelInputDraft(raw);
+                            const val = parseInt(raw, 10);
                             if (!Number.isNaN(val)) {
                               onSelectLevel(val);
                             }
+                          }}
+                          onBlur={() => {
+                            setLevelInputDraft(String(selectedLevel));
                           }}
                           aria-label="Enter level number 1 to 99"
                           className="w-12 bg-[#0b1120] border border-white/15 rounded px-1.5 py-0.5 text-center text-sm font-mono-tabular text-slate-100 focus:outline-none focus:border-red-500"
