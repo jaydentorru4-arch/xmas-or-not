@@ -96,6 +96,7 @@ interface MenuOverlaysProps {
   onStartRoomMatch: () => Promise<void>;
   onSendGlobalChat: (text: string) => Promise<void>;
   onSendRoomChat: (text: string) => Promise<void>;
+  onClearGlobalChat: () => Promise<void>;
 }
 
 type RightTab = 'coop' | 'customize' | 'friends';
@@ -229,6 +230,7 @@ export const MenuOverlays: React.FC<MenuOverlaysProps> = ({
   onStartRoomMatch,
   onSendGlobalChat,
   onSendRoomChat,
+  onClearGlobalChat,
 }) => {
   const [rightTab, setRightTab] = useState<RightTab>('coop');
 
@@ -963,9 +965,18 @@ export const MenuOverlays: React.FC<MenuOverlaysProps> = ({
 
                     {/* Global Survivor Chat */}
                     <div className="bg-[#050811]/80 border border-white/10 rounded-lg p-3.5 flex flex-col gap-2">
-                      <div className="flex items-center gap-1.5 text-xs font-medium text-slate-300">
-                        <MessageSquare className="w-3.5 h-3.5 text-sky-400" />
-                        <span>Global Survivor Chat</span>
+                      <div className="flex items-center justify-between text-xs font-medium text-slate-300">
+                        <div className="flex items-center gap-1.5">
+                          <MessageSquare className="w-3.5 h-3.5 text-sky-400" />
+                          <span>Global Survivor Chat</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void onClearGlobalChat()}
+                          className="text-[10px] text-slate-400 hover:text-red-400 transition-colors cursor-pointer px-1.5 py-0.5 bg-white/5 hover:bg-white/10 rounded"
+                        >
+                          Clear Chat
+                        </button>
                       </div>
                       <div
                         ref={globalChatScrollRef}

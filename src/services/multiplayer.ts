@@ -631,23 +631,38 @@ export function subscribeGlobalChat(
   return onSnapshot(
     q,
     (snap) => {
-      const msgs: ChatMessageData[] = snap.docs.map((docSnap) => {
-        const d = docSnap.data();
-        const ts = d.createdAt?.toMillis ? d.createdAt.toMillis() : Date.now();
-        return {
-          id: docSnap.id,
-          senderId: String(d.senderId || ''),
-          senderName: String(d.senderName || 'Survivor'),
-          coatColor: String(d.coatColor || '#38bdf8'),
-          text: String(d.text || ''),
-          createdAtMs: ts,
-        };
-      });
+      const oneHourAgo = Date.now() - 3600000;
+      const msgs: ChatMessageData[] = snap.docs
+        .map((docSnap) => {
+          const d = docSnap.data();
+          const ts = d.createdAt?.toMillis ? d.createdAt.toMillis() : Date.now();
+          return {
+            id: docSnap.id,
+            senderId: String(d.senderId || ''),
+            senderName: String(d.senderName || 'Survivor'),
+            coatColor: String(d.coatColor || '#38bdf8'),
+            text: String(d.text || ''),
+            createdAtMs: ts,
+          };
+        })
+        .filter((m) => m.createdAtMs >= oneHourAgo);
       msgs.sort((a, b) => a.createdAtMs - b.createdAtMs);
       onMessages(msgs.slice(-40));
     },
     (error) => handleFirestoreError(error, OperationType.LIST, path)
   );
+}
+
+export async function clearGlobalChat(): Promise<void> {
+  try {
+    const q = query(collection(db, 'globalChat'), where('channel', '==', 'global'));
+    const snap = await getDocs(q);
+    for (const d of snap.docs) {
+      await deleteDoc(d.ref);
+    }
+  } catch {
+    // ignore
+  }
 }
 
 export async function sendGlobalChatMessage(
@@ -1277,18 +1292,21 @@ export function subscribeRoomChat(
   return onSnapshot(
     q,
     (snap) => {
-      const msgs: ChatMessageData[] = snap.docs.map((docSnap) => {
-        const d = docSnap.data();
-        const ts = d.createdAt?.toMillis ? d.createdAt.toMillis() : Date.now();
-        return {
-          id: docSnap.id,
-          senderId: String(d.senderId || ''),
-          senderName: String(d.senderName || 'Survivor'),
-          coatColor: String(d.coatColor || '#38bdf8'),
-          text: String(d.text || ''),
-          createdAtMs: ts,
-        };
-      });
+      const oneHourAgo = Date.now() - 3600000;
+      const msgs: ChatMessageData[] = snap.docs
+        .map((docSnap) => {
+          const d = docSnap.data();
+          const ts = d.createdAt?.toMillis ? d.createdAt.toMillis() : Date.now();
+          return {
+            id: docSnap.id,
+            senderId: String(d.senderId || ''),
+            senderName: String(d.senderName || 'Survivor'),
+            coatColor: String(d.coatColor || '#38bdf8'),
+            text: String(d.text || ''),
+            createdAtMs: ts,
+          };
+        })
+        .filter((m) => m.createdAtMs >= oneHourAgo);
       msgs.sort((a, b) => a.createdAtMs - b.createdAtMs);
       onMessages(msgs.slice(-60));
     },

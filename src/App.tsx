@@ -22,6 +22,7 @@ import {
   acceptFriendRequest,
   advanceRoomWeaponWave,
   claimRoomHost,
+  clearGlobalChat,
   collectRoomBattery,
   collectRoomOrnament,
   collectRoomWeapon,
@@ -736,6 +737,7 @@ export default function App() {
         onStartRoomMatch={handleStartRoomMatch}
         onSendGlobalChat={handleSendGlobalChat}
         onSendRoomChat={handleSendRoomChat}
+        onClearGlobalChat={() => clearGlobalChat()}
       />
     </main>
   );
