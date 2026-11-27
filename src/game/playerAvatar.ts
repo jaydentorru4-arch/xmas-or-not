@@ -16,9 +16,11 @@ export interface RemoteSurvivorRig {
   stunned: boolean;
   equippedWeapon: WeaponType | '';
   shotCount: number;
+  reviveCount: number;
   update: (dt: number, nowSec: number) => void;
   syncFromData: (data: RoomPlayerData) => {
     justCaught: boolean;
+    justRevived: boolean;
     justEscaped: boolean;
     justStunned: boolean;
     justShot: boolean;
@@ -30,7 +32,7 @@ export interface RemoteSurvivorRig {
 function createNameTagTexture(
   label: string,
   coatColor: string,
-  statusBadge?: 'TRAPPED' | 'CAUGHT'
+  statusBadge?: 'TRAPPED' | 'REVIVE (R)'
 ): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
   canvas.width = 256;
@@ -39,8 +41,8 @@ function createNameTagTexture(
 
   ctx.fillStyle = statusBadge === 'TRAPPED'
     ? 'rgba(124, 45, 18, 0.92)'
-    : statusBadge === 'CAUGHT'
-      ? 'rgba(127, 29, 29, 0.9)'
+    : statusBadge === 'REVIVE (R)'
+      ? 'rgba(6, 78, 59, 0.92)'
       : 'rgba(6, 9, 19, 0.85)';
   ctx.beginPath();
   ctx.roundRect(12, 10, 232, 44, 10);
@@ -48,8 +50,8 @@ function createNameTagTexture(
 
   ctx.strokeStyle = statusBadge === 'TRAPPED'
     ? '#f97316'
-    : statusBadge === 'CAUGHT'
-      ? '#ef4444'
+    : statusBadge === 'REVIVE (R)'
+      ? '#34d399'
       : coatColor;
   ctx.lineWidth = 3;
   ctx.beginPath();
@@ -60,7 +62,7 @@ function createNameTagTexture(
   ctx.fillStyle = '#f8fafc';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  const text = statusBadge ? `${label.slice(0, 11)} · ${statusBadge}` : label.slice(0, 18);
+  const text = statusBadge ? `${label.slice(0, 10)} · ${statusBadge}` : label.slice(0, 18);
   ctx.fillText(text, 128, 33);
 
   const tex = new THREE.CanvasTexture(canvas);
@@ -179,7 +181,6 @@ export function createRemoteSurvivor(
   // Parka Torso & Backpack
   const torso = new THREE.Mesh(track(new THREE.CylinderGeometry(0.24, 0.28, 0.76, 10)), coatMat);
   torso.position.y = 1.14;
-  torso.castShadow = true;
   bodyGroup.add(torso);
 
   const scarf = new THREE.Mesh(track(new THREE.TorusGeometry(0.2, 0.06, 7, 12)), scarfMat);
@@ -252,7 +253,7 @@ export function createRemoteSurvivor(
     ushankaGroup.visible = style === 'ushanka';
   };
 
-  // Right arm holding flashlight
+  // Right arm holding flashlight + lightweight additive volumetric beam cone (zero PointLights)
   const flashlightTorch = new THREE.Group();
   flashlightTorch.position.set(0.3, 1.24, 0.22);
   bodyGroup.add(flashlightTorch);
@@ -266,9 +267,20 @@ export function createRemoteSurvivor(
   torchLens.position.z = 0.12;
   flashlightTorch.add(torchLens);
 
-  const torchLight = new THREE.PointLight(0xffe6b0, 1.8, 7.5, 1.8);
-  torchLight.position.set(0, 0, 0.35);
-  flashlightTorch.add(torchLight);
+  const beamConeMat = track(
+    new THREE.MeshBasicMaterial({
+      color: 0xffe6b0,
+      transparent: true,
+      opacity: 0.13,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+    })
+  );
+  const beamCone = new THREE.Mesh(track(new THREE.ConeGeometry(0.85, 3.6, 10, 1, true)), beamConeMat);
+  beamCone.rotation.x = -Math.PI / 2;
+  beamCone.position.set(0, 0, 1.94);
+  flashlightTorch.add(beamCone);
 
   // Left arm weapon mount so teammates see equipped stun weapons
   const weaponMount = new THREE.Group();
@@ -326,15 +338,44 @@ export function createRemoteSurvivor(
   trapRing.visible = false;
   root.add(trapRing);
 
-  // Fallen marker left behind when caught by Santa so teammates see where they fell
+  // Downed survivor body + glowing emerald rescue beacon (zero PointLights)
   const fallenGroup = new THREE.Group();
-  const fallenTorch = new THREE.Mesh(track(new THREE.CylinderGeometry(0.05, 0.05, 0.34, 8)), metalMat);
-  fallenTorch.rotation.z = Math.PI / 2;
-  fallenTorch.rotation.y = 0.6;
-  fallenTorch.position.y = 0.06;
-  const fallenGlow = new THREE.PointLight(0xef4444, 1.4, 4.5, 1.6);
-  fallenGlow.position.set(0, 0.35, 0);
-  fallenGroup.add(fallenTorch, fallenGlow);
+  const fallenBody = new THREE.Mesh(track(new THREE.CylinderGeometry(0.22, 0.24, 0.72, 10)), coatMat);
+  fallenBody.rotation.x = Math.PI / 2;
+  fallenBody.position.set(0, 0.22, 0.05);
+  const fallenScarf = new THREE.Mesh(track(new THREE.TorusGeometry(0.18, 0.05, 6, 12)), scarfMat);
+  fallenScarf.position.set(0, 0.24, 0.4);
+  const fallenHead = new THREE.Mesh(track(new THREE.SphereGeometry(0.17, 10, 10)), skinMat);
+  fallenHead.position.set(0, 0.24, 0.56);
+  const fallenLegs = new THREE.Mesh(track(new THREE.BoxGeometry(0.32, 0.16, 0.56)), darkPantsMat);
+  fallenLegs.position.set(0, 0.14, -0.52);
+
+  const rescueRingMat = track(
+    new THREE.MeshBasicMaterial({
+      color: 0x34d399,
+      transparent: true,
+      opacity: 0.8,
+      side: THREE.DoubleSide,
+    })
+  );
+  const rescueRing = new THREE.Mesh(track(new THREE.RingGeometry(0.62, 0.82, 22)), rescueRingMat);
+  rescueRing.rotation.x = -Math.PI / 2;
+  rescueRing.position.y = 0.04;
+
+  const rescueBeamMat = track(
+    new THREE.MeshBasicMaterial({
+      color: 0x34d399,
+      transparent: true,
+      opacity: 0.2,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+    })
+  );
+  const rescueBeam = new THREE.Mesh(track(new THREE.CylinderGeometry(0.18, 0.45, 2.4, 12, 1, true)), rescueBeamMat);
+  rescueBeam.position.y = 1.2;
+
+  fallenGroup.add(fallenBody, fallenScarf, fallenHead, fallenLegs, rescueRing, rescueBeam);
   fallenGroup.visible = false;
   root.add(fallenGroup);
 
@@ -353,7 +394,7 @@ export function createRemoteSurvivor(
   nameSprite.scale.set(1.4, 0.35, 1);
   root.add(nameSprite);
 
-  const refreshNameTag = (name: string, coat: string, badge?: 'TRAPPED' | 'CAUGHT') => {
+  const refreshNameTag = (name: string, coat: string, badge?: 'TRAPPED' | 'REVIVE (R)') => {
     const key = `${name}|${coat}|${badge || ''}`;
     if (key === currentNameKey) return;
     currentNameKey = key;
@@ -365,6 +406,9 @@ export function createRemoteSurvivor(
   };
 
   let initialized = false;
+  let lastSyncMs = performance.now();
+  let estVelX = 0;
+  let estVelZ = 0;
 
   const rig: RemoteSurvivorRig = {
     uid: initial.uid,
@@ -380,16 +424,38 @@ export function createRemoteSurvivor(
     stunned: Boolean(initial.stunned),
     equippedWeapon: initial.equippedWeapon || '',
     shotCount: initial.shotCount || 0,
+    reviveCount: Number(initial.reviveCount || 0),
     syncFromData(data: RoomPlayerData) {
       const prevAlive = this.alive;
       const prevEscaped = this.escaped;
       const prevStunned = this.stunned;
       const prevShots = this.shotCount;
+      const prevRevives = this.reviveCount;
 
       const justCaught = initialized && prevAlive && !data.alive;
+      const justRevived = initialized && ((!prevAlive && data.alive) || Number(data.reviveCount || 0) > prevRevives);
       const justEscaped = initialized && !prevEscaped && data.escaped;
       const justStunned = initialized && !prevStunned && Boolean(data.stunned);
       const justShot = initialized && (data.shotCount || 0) > prevShots;
+
+      const nowMs = performance.now();
+      const dtSec = Math.max(0.05, Math.min(1.0, (nowMs - lastSyncMs) / 1000));
+      if (initialized && data.alive && !data.escaped) {
+        const dx = data.x - this.targetX;
+        const dz = data.z - this.targetZ;
+        const dist = Math.hypot(dx, dz);
+        if (dist > 0.02 && dist < 8) {
+          estVelX = THREE.MathUtils.clamp(dx / dtSec, -7.2, 7.2);
+          estVelZ = THREE.MathUtils.clamp(dz / dtSec, -7.2, 7.2);
+        } else {
+          estVelX = 0;
+          estVelZ = 0;
+        }
+      } else {
+        estVelX = 0;
+        estVelZ = 0;
+      }
+      lastSyncMs = nowMs;
 
       this.displayName = data.displayName;
       this.coatColorHex = data.coatColor || '#3b82f6';
@@ -402,13 +468,14 @@ export function createRemoteSurvivor(
       this.stunned = Boolean(data.stunned);
       this.equippedWeapon = data.equippedWeapon || '';
       this.shotCount = data.shotCount || 0;
+      this.reviveCount = Number(data.reviveCount || 0);
 
       coatMat.color.set(data.coatColor || '#3b82f6');
       scarfMat.color.set(data.scarfColor || '#e2e8f0');
       applyHatStyle(data.hatStyle || 'hood');
       syncWeaponMesh(this.equippedWeapon);
 
-      torchLight.intensity = data.flashlightOn && data.alive ? 1.8 : 0;
+      beamCone.visible = data.flashlightOn && data.alive;
       torchLens.visible = data.flashlightOn && data.alive;
 
       bodyGroup.visible = data.alive && !data.escaped;
@@ -416,13 +483,13 @@ export function createRemoteSurvivor(
       trapRing.visible = data.alive && !data.escaped && this.stunned;
       root.visible = !data.escaped;
 
-      const badge: 'TRAPPED' | 'CAUGHT' | undefined = !data.alive
-        ? 'CAUGHT'
+      const badge: 'TRAPPED' | 'REVIVE (R)' | undefined = !data.alive
+        ? 'REVIVE (R)'
         : this.stunned
           ? 'TRAPPED'
           : undefined;
       refreshNameTag(data.displayName, this.coatColorHex, badge);
-      nameSprite.position.y = data.alive ? 2.25 : 0.75;
+      nameSprite.position.y = data.alive ? 2.25 : 1.05;
 
       if (justShot) {
         shotFlashTimer = 0.22;
@@ -432,6 +499,7 @@ export function createRemoteSurvivor(
       initialized = true;
       return {
         justCaught,
+        justRevived,
         justEscaped,
         justStunned,
         justShot,
@@ -441,14 +509,19 @@ export function createRemoteSurvivor(
     update(dt: number, nowSec: number) {
       const prevX = root.position.x;
       const prevZ = root.position.z;
-      root.position.x = THREE.MathUtils.damp(root.position.x, this.targetX, 11, dt);
-      root.position.z = THREE.MathUtils.damp(root.position.z, this.targetZ, 11, dt);
+
+      const ageSec = Math.min(0.24, Math.max(0, (performance.now() - lastSyncMs) / 1000));
+      const goalX = this.alive && !this.stunned ? this.targetX + estVelX * ageSec : this.targetX;
+      const goalZ = this.alive && !this.stunned ? this.targetZ + estVelZ * ageSec : this.targetZ;
+
+      root.position.x = THREE.MathUtils.damp(root.position.x, goalX, 12, dt);
+      root.position.z = THREE.MathUtils.damp(root.position.z, goalZ, 12, dt);
 
       const desiredRotY = this.targetYaw + Math.PI;
       let deltaYaw = desiredRotY - root.rotation.y;
       while (deltaYaw > Math.PI) deltaYaw -= Math.PI * 2;
       while (deltaYaw < -Math.PI) deltaYaw += Math.PI * 2;
-      root.rotation.y += deltaYaw * Math.min(1, dt * 11);
+      root.rotation.y += deltaYaw * Math.min(1, dt * 12);
 
       if (shotFlashTimer > 0) {
         shotFlashTimer -= dt;
@@ -465,8 +538,11 @@ export function createRemoteSurvivor(
         bodyGroup.position.y = THREE.MathUtils.damp(bodyGroup.position.y, 0, 10, dt);
       }
 
-      if (!this.alive) {
-        fallenGlow.intensity = 0.7 + Math.sin(nowSec * 6) * 0.55;
+      if (!this.alive && !this.escaped) {
+        const pulse = 0.55 + Math.sin(nowSec * 5.2) * 0.35;
+        rescueRingMat.opacity = pulse;
+        rescueBeamMat.opacity = 0.12 + pulse * 0.16;
+        rescueRing.scale.setScalar(0.94 + Math.sin(nowSec * 4) * 0.08);
       }
 
       const moveDist = Math.hypot(root.position.x - prevX, root.position.z - prevZ);

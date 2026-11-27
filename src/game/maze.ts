@@ -52,11 +52,12 @@ export function generateMaze(
   ornamentCount = 6,
   seed = Date.now(),
   mazeSize = DEFAULT_MAZE_SIZE,
-  batteryCount = 6
+  batteryCount = 6,
+  santaCount = 1
 ): MazeData {
   const rand = createRng(seed);
-  // Ensure mazeSize is odd and >= 15
-  const rawSize = Math.max(15, Math.min(39, Math.floor(mazeSize)));
+  // Ensure mazeSize is odd and between 15 and 45
+  const rawSize = Math.max(15, Math.min(45, Math.floor(mazeSize)));
   const size = rawSize % 2 === 1 ? rawSize : rawSize + 1;
   const grid: number[][] = Array.from({ length: size }, () => Array(size).fill(1));
 
@@ -137,7 +138,9 @@ export function generateMaze(
 
   openCells.sort((a, b) => b.dist - a.dist);
 
-  // Santa spawns far away from player & exit
+  // Santas spawn far away from player & exit, spaced apart from each other
+  const targetSantaCount = Math.max(1, Math.min(3, Math.floor(santaCount || 1)));
+  const santaSpawns: GridCoord[] = [];
   const santaCandidate =
     openCells.find(
       (cell) =>
@@ -145,6 +148,36 @@ export function generateMaze(
         Math.abs(cell.r - exitCell.r) + Math.abs(cell.c - exitCell.c) >= 8
     ) ?? openCells[1];
   const santaSpawn: GridCoord = { r: santaCandidate.r, c: santaCandidate.c };
+  santaSpawns.push(santaSpawn);
+
+  if (targetSantaCount > 1) {
+    const santaPool = openCells.filter(
+      (cell) =>
+        cell.dist >= Math.max(12, Math.floor(size * 0.48)) &&
+        Math.abs(cell.r - exitCell.r) + Math.abs(cell.c - exitCell.c) >= 6
+    );
+    shuffle(santaPool, rand);
+    const minSantaSep = Math.max(8, Math.floor(size * 0.34));
+    for (const cand of santaPool) {
+      if (santaSpawns.length >= targetSantaCount) break;
+      const farEnough = santaSpawns.every(
+        (s) => Math.abs(s.r - cand.r) + Math.abs(s.c - cand.c) >= minSantaSep
+      );
+      if (farEnough) {
+        santaSpawns.push({ r: cand.r, c: cand.c });
+      }
+    }
+    // Fallback if pool spacing was tight
+    for (const cand of openCells) {
+      if (santaSpawns.length >= targetSantaCount) break;
+      if (
+        cand.dist >= 10 &&
+        !santaSpawns.some((s) => s.r === cand.r && s.c === cand.c)
+      ) {
+        santaSpawns.push({ r: cand.r, c: cand.c });
+      }
+    }
+  }
 
   // Distribute ornaments across distinct regions
   const ornaments: GridCoord[] = [];
@@ -152,7 +185,7 @@ export function generateMaze(
     (cell) =>
       cell.dist >= 6 &&
       (cell.r !== exitApproachR || cell.c !== exitApproachC) &&
-      (cell.r !== santaSpawn.r || cell.c !== santaSpawn.c)
+      !santaSpawns.some((s) => s.r === cell.r && s.c === cell.c)
   );
   shuffle(eligible, rand);
 
@@ -223,6 +256,7 @@ export function generateMaze(
     grid,
     playerSpawn,
     santaSpawn,
+    santaSpawns,
     exitCell,
     ornaments,
     batteries,

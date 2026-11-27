@@ -80,8 +80,26 @@ export interface MultiplayerEngineCallbacks {
   onAdvanceWeaponWave?: (waveIndex: number) => void;
   onClaimHost?: () => void;
   onTriggerSantaStun?: () => void;
+  onReviveTeammate?: (targetUid: string) => void;
   onLocalEliminated?: () => void;
   onLocalEscaped?: () => void;
+}
+
+interface SantaAgent {
+  index: number;
+  rig: EvilSantaRig;
+  pos: THREE.Vector3;
+  yaw: number;
+  velX: number;
+  velZ: number;
+  alerted: boolean;
+  alertTimer: number;
+  lastKnownCell: GridCoord | null;
+  patrolTarget: GridCoord | null;
+  currentSpeed: number;
+  stunRemaining: number;
+  stuckTimer: number;
+  lastProgressPos: THREE.Vector3;
 }
 
 export class MazeEngine {
@@ -103,7 +121,7 @@ export class MazeEngine {
   private mazeGroup!: THREE.Group;
   private mazeData!: MazeData;
   private activeMazeSeed = 1337;
-  private santa!: EvilSantaRig;
+  private santas: SantaAgent[] = [];
   private ornaments: OrnamentProp[] = [];
   private weapons: WeaponProp[] = [];
   private batteries: BatteryProp[] = [];
@@ -178,6 +196,10 @@ export class MazeEngine {
   private localShotCount = 0;
   private lastShotHit = false;
   private hiddenHostTimerId: number | null = null;
+  private fallenPos = new THREE.Vector3();
+  private lastSeenReviveCount = 0;
+  private reviveGraceTimer = 0;
+  private lastReviveClickMs = 0;
 
   // Player kinematics & Dodge
   private playerPos = new THREE.Vector3(0, EYE_HEIGHT, 0);
@@ -193,21 +215,10 @@ export class MazeEngine {
   private dodgeDirX = 0;
   private dodgeDirZ = 0;
 
-  // Santa AI & Stun state
-  private santaPos = new THREE.Vector3();
-  private santaYaw = 0;
-  private santaVelX = 0;
-  private santaVelZ = 0;
-  private santaAlerted = false;
-  private santaAlertTimer = 0;
-  private santaLastKnownCell: GridCoord | null = null;
-  private santaPatrolTarget: GridCoord | null = null;
-  private santaCurrentSpeed = 0;
-  private santaStunRemaining = 0;
-  private santaStuckTimer = 0;
-  private santaLastProgressPos = new THREE.Vector3();
+  // Santa Jumpscare state
   private jumpscareTimer = 0;
   private jumpscareActive = false;
+  private jumpscareSantaIndex = 0;
 
   // Chime / Sense state
   private chimeCooldown = 0;
@@ -276,7 +287,7 @@ export class MazeEngine {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.15;
-    this.renderer.setPixelRatio(this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 1.5));
     this.renderer.setSize(width, height);
     this.renderer.shadowMap.enabled = !this.isSoftwareGl;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -335,8 +346,8 @@ export class MazeEngine {
 
     this.flashlight = new THREE.SpotLight(0xfff1d4, 7.2, 26, Math.PI / 5.4, 0.62, 1.55);
     this.flashlight.castShadow = !this.isSoftwareGl;
-    this.flashlight.shadow.mapSize.width = 1024;
-    this.flashlight.shadow.mapSize.height = 1024;
+    this.flashlight.shadow.mapSize.width = 512;
+    this.flashlight.shadow.mapSize.height = 512;
     this.flashlight.shadow.camera.near = 0.25;
     this.flashlight.shadow.camera.far = 26;
     this.flashlight.shadow.bias = -0.0005;
@@ -429,9 +440,10 @@ export class MazeEngine {
     while (this.mazeGroup.children.length > 0) {
       this.mazeGroup.remove(this.mazeGroup.children[0]);
     }
-    if (this.santa) {
-      this.santa.dispose();
+    for (const s of this.santas) {
+      s.rig.dispose();
     }
+    this.santas = [];
     for (const rig of this.remotePlayers.values()) {
       rig.dispose();
     }
@@ -532,7 +544,8 @@ export class MazeEngine {
       scaling.ornamentCount,
       this.activeMazeSeed,
       scaling.mazeSize,
-      scaling.batteryCount
+      scaling.batteryCount,
+      scaling.santaCount
     );
 
     const { size, cellSize, wallHeight, grid } = this.mazeData;
@@ -690,8 +703,8 @@ export class MazeEngine {
       this.mazeGroup.add(elfRig.root);
     }
 
-    // Nightmare mode helper elf accompanying Evil Santa
-    if (this.difficulty === 'nightmare') {
+    // Nightmare & Insane mode helper elf accompanying Evil Santa
+    if (this.difficulty === 'nightmare' || this.difficulty === 'insane') {
       const helper = createTinyElf(this.textures.contactShadow, true, this.activeMazeSeed + 909);
       const santaW = cellToWorld(this.mazeData.santaSpawn.r, this.mazeData.santaSpawn.c, size, cellSize);
       helper.root.position.set(santaW.x, 0, santaW.z);
@@ -704,13 +717,29 @@ export class MazeEngine {
     this.exitGate.group.rotation.y = Math.PI / 2;
     this.mazeGroup.add(this.exitGate.group);
 
-    this.santa = createEvilSanta(this.textures.contactShadow, this.textures.candyCaneColor);
-    const santaW = cellToWorld(this.mazeData.santaSpawn.r, this.mazeData.santaSpawn.c, size, cellSize);
-    this.santaPos.set(santaW.x, 0, santaW.z);
-    this.santaLastProgressPos.copy(this.santaPos);
-    this.santaStuckTimer = 0;
-    this.santa.root.position.copy(this.santaPos);
-    this.mazeGroup.add(this.santa.root);
+    this.santas = this.mazeData.santaSpawns.map((coord, index) => {
+      const rig = createEvilSanta(this.textures.contactShadow, this.textures.candyCaneColor);
+      const sw = cellToWorld(coord.r, coord.c, size, cellSize);
+      const pos = new THREE.Vector3(sw.x, 0, sw.z);
+      rig.root.position.copy(pos);
+      this.mazeGroup.add(rig.root);
+      return {
+        index,
+        rig,
+        pos,
+        yaw: 0,
+        velX: 0,
+        velZ: 0,
+        alerted: false,
+        alertTimer: 0,
+        lastKnownCell: null,
+        patrolTarget: null,
+        currentSpeed: 0,
+        stunRemaining: 0,
+        stuckTimer: 0,
+        lastProgressPos: pos.clone(),
+      };
+    });
 
     const playerW = cellToWorld(this.mazeData.playerSpawn.r, this.mazeData.playerSpawn.c, size, cellSize);
     this.playerPos.set(playerW.x, EYE_HEIGHT, playerW.z);
@@ -735,16 +764,9 @@ export class MazeEngine {
     if (this.playerAmbientGlow) this.playerAmbientGlow.intensity = 0.82;
     this.dodgeCooldown = 0;
     this.dodgeActiveTimer = 0;
-    this.santaAlerted = false;
-    this.santaAlertTimer = 0;
-    this.santaLastKnownCell = null;
-    this.santaPatrolTarget = null;
-    this.santaVelX = 0;
-    this.santaVelZ = 0;
-    this.santaCurrentSpeed = 0;
-    this.santaStunRemaining = 0;
     this.jumpscareActive = false;
     this.jumpscareTimer = 0;
+    this.jumpscareSantaIndex = 0;
     this.chimeCooldown = 0;
     this.chimeDisplayTimer = 0;
     this.chimeAngleDeg = null;
@@ -756,6 +778,10 @@ export class MazeEngine {
     this.lastSeenStunNonce = 0;
     this.localShotCount = 0;
     this.lastShotHit = false;
+    this.fallenPos.copy(this.playerPos);
+    this.lastSeenReviveCount = 0;
+    this.reviveGraceTimer = 0;
+    this.lastReviveClickMs = 0;
     this.lastSyncedPlayerPos.set(999, 0, 999);
     this.lastSyncedYaw = 999;
     this.lastSyncedStateKey = '';
@@ -799,8 +825,10 @@ export class MazeEngine {
     this.audio.init();
     this.buildNewLevel(undefined, this.level);
     this.phase = 'playing';
+    const santaNote =
+      this.santas.length > 1 ? ` Beware: ${this.santas.length} Evil Santas patrol this maze!` : '';
     this.showBanner(
-      `Level ${this.level}: Collect ${this.mazeData.ornaments.length} ornaments. Grab weapons & batteries!`
+      `Level ${this.level}: Collect ${this.mazeData.ornaments.length} ornaments.${santaNote}`
     );
     this.requestPointerLockSafe();
     this.pushHud();
@@ -836,25 +864,32 @@ export class MazeEngine {
     const stunned = this.playerTrapStunRemaining > 0;
     const eqWep: WeaponType | '' = this.equippedWeapon || '';
     const stateKey = `${this.flashlightOn}|${this.alive}|${this.phase === 'escaped'}|${stunned}|${eqWep}|${this.localShotCount}`;
+
+    // When downed or escaped, freeze synced coords at fallenPos and skip periodic keepalive writes
+    // so we never clobber a teammate's revive write or burn Firestore quota while spectating.
+    const syncX = this.alive ? this.playerPos.x : this.fallenPos.x;
+    const syncZ = this.alive ? this.playerPos.z : this.fallenPos.z;
     const moved =
-      Math.hypot(this.playerPos.x - this.lastSyncedPlayerPos.x, this.playerPos.z - this.lastSyncedPlayerPos.z) > 0.14 ||
-      Math.abs(this.yaw - this.lastSyncedYaw) > 0.09;
+      this.alive &&
+      this.phase === 'playing' &&
+      (Math.hypot(syncX - this.lastSyncedPlayerPos.x, syncZ - this.lastSyncedPlayerPos.z) > 0.16 ||
+        Math.abs(this.yaw - this.lastSyncedYaw) > 0.1);
     const stateChanged = stateKey !== this.lastSyncedStateKey;
-    const dueKeepalive = now - this.lastPlayerSyncMs > 2000;
-    const dueMove = moved && now - this.lastPlayerSyncMs > 220;
+    const dueKeepalive = this.alive && this.phase === 'playing' && now - this.lastPlayerSyncMs > 2500;
+    const dueMove = moved && now - this.lastPlayerSyncMs > 260;
 
     if (!force && !stateChanged && !dueMove && !dueKeepalive) {
       return;
     }
 
     this.lastPlayerSyncMs = now;
-    this.lastSyncedPlayerPos.copy(this.playerPos);
+    this.lastSyncedPlayerPos.set(syncX, EYE_HEIGHT, syncZ);
     this.lastSyncedYaw = this.yaw;
     this.lastSyncedStateKey = stateKey;
 
     this.mpCallbacks.onLocalPlayerSync?.({
-      x: this.playerPos.x,
-      z: this.playerPos.z,
+      x: syncX,
+      z: syncZ,
       yaw: this.yaw,
       flashlightOn: this.flashlightOn,
       alive: this.alive,
@@ -866,13 +901,36 @@ export class MazeEngine {
     });
   }
 
+  private buildSantaSyncPayload(): SantaLiveData {
+    const primary = this.santas[0];
+    const extras = this.santas.slice(1, 3).map((s) => ({
+      x: s.pos.x,
+      z: s.pos.z,
+      yaw: s.yaw,
+      speed: s.currentSpeed,
+      alerted: s.alerted,
+      stunRemaining: s.stunRemaining,
+    }));
+    return {
+      x: primary ? primary.pos.x : 0,
+      z: primary ? primary.pos.z : 0,
+      yaw: primary ? primary.yaw : 0,
+      speed: primary ? primary.currentSpeed : 0,
+      alerted: primary ? primary.alerted : false,
+      stunRemaining: primary ? primary.stunRemaining : 0,
+      extras,
+    };
+  }
+
   public setRoomHostStatus(isHost: boolean): void {
     if (this.isHost === isHost) return;
     this.isHost = isHost;
     if (isHost) {
       this.remoteSantaTarget = null;
-      this.santaLastProgressPos.copy(this.santaPos);
-      this.santaStuckTimer = 0;
+      for (const s of this.santas) {
+        s.lastProgressPos.copy(s.pos);
+        s.stuckTimer = 0;
+      }
     }
     this.pushHud();
   }
@@ -902,21 +960,16 @@ export class MazeEngine {
     this.audio.init();
     this.buildNewLevel(cfg.mazeSeed, this.level);
     this.phase = 'playing';
+    const santaNote =
+      this.santas.length > 1 ? ` ${this.santas.length} Evil Santas active!` : ' Weapons drop every 60s.';
     this.showBanner(
-      `Level ${this.level}: Collect ${this.mazeData.ornaments.length} ornaments! Weapons drop every 60s.`
+      `Level ${this.level}: Collect ${this.mazeData.ornaments.length} ornaments!${santaNote}`
     );
     this.requestPointerLockSafe();
 
     this.pushLocalPlayerSync(true);
     if (this.isHost) {
-      this.mpCallbacks.onHostSantaSync?.({
-        x: this.santaPos.x,
-        z: this.santaPos.z,
-        yaw: this.santaYaw,
-        speed: 0,
-        alerted: false,
-        stunRemaining: 0,
-      });
+      this.mpCallbacks.onHostSantaSync?.(this.buildSantaSyncPayload());
     }
     this.pushHud();
   }
@@ -927,7 +980,30 @@ export class MazeEngine {
 
     const seen = new Set<string>();
     for (const p of players) {
-      if (p.uid === this.localUid) continue;
+      if (p.uid === this.localUid) {
+        const revCount = Number(p.reviveCount || 0);
+        if (this.phase === 'playing' && !this.alive && (p.alive || revCount > this.lastSeenReviveCount)) {
+          this.lastSeenReviveCount = revCount;
+          this.alive = true;
+          this.spectating = false;
+          this.jumpscareActive = false;
+          this.playerTrapStunRemaining = 0;
+          this.reviveGraceTimer = 3.5;
+          this.playerPos.set(this.fallenPos.x, EYE_HEIGHT, this.fallenPos.z);
+          this.resolveMazeCollisions(this.playerPos, PLAYER_RADIUS);
+          this.flashlightOn = true;
+          this.battery = Math.max(this.battery, 60);
+          this.stamina = Math.max(this.stamina, 80);
+          this.audio.playOrnamentPickup();
+          const by = p.revivedBy ? ` by ${p.revivedBy}` : '';
+          this.showBanner(`Revived${by}! 3.5s grace shield — move!`, 4.5);
+          this.pushLocalPlayerSync(true);
+          this.pushHud();
+        } else if (revCount > this.lastSeenReviveCount) {
+          this.lastSeenReviveCount = revCount;
+        }
+        continue;
+      }
       seen.add(p.uid);
 
       let rig = this.remotePlayers.get(p.uid);
@@ -945,7 +1021,10 @@ export class MazeEngine {
         if (this.phase === 'playing') {
           if (events.justCaught) {
             this.audio.playJumpscare();
-            this.showBanner(`${p.displayName} was caught by Evil Santa!`, 4.5);
+            this.showBanner(`${p.displayName} is downed! Go revive them (R)!`, 4.5);
+          } else if (events.justRevived) {
+            this.audio.playOrnamentPickup();
+            this.showBanner(`${p.displayName} was revived!`, 3.5);
           } else if (events.justEscaped) {
             this.audio.playOrnamentPickup();
             this.showBanner(`${p.displayName} escaped through the Exit Gate!`, 4.5);
@@ -953,7 +1032,32 @@ export class MazeEngine {
             this.showBanner(`${p.displayName} stepped in an Elf Trap (5s stun)!`, 3.5);
           } else if (events.justShot) {
             this.audio.playWeaponFire('tranq_dart');
-            if (!events.shotHit) {
+            if (events.shotHit) {
+              // Stun the Santa nearest the shooting survivor immediately
+              let targetSanta: SantaAgent | null = null;
+              let bestD = Infinity;
+              for (const s of this.santas) {
+                const d = Math.hypot(s.pos.x - rig.targetX, s.pos.z - rig.targetZ);
+                if (d < bestD) {
+                  bestD = d;
+                  targetSanta = s;
+                }
+              }
+              if (targetSanta) {
+                targetSanta.stunRemaining = 30.0;
+                targetSanta.alerted = false;
+                targetSanta.alertTimer = 0;
+                targetSanta.currentSpeed = 0;
+                targetSanta.velX = 0;
+                targetSanta.velZ = 0;
+                this.audio.playSantaStunned();
+                this.showBanner(`${p.displayName} stunned an Evil Santa for 30s!`, 4.0);
+                if (this.isHost) {
+                  this.lastSantaSyncMs = performance.now();
+                  this.mpCallbacks.onHostSantaSync?.(this.buildSantaSyncPayload());
+                }
+              }
+            } else {
               this.showBanner(`${p.displayName} fired a stun weapon!`, 2.5);
             }
           }
@@ -983,9 +1087,21 @@ export class MazeEngine {
   public applyRemoteSantaState(santa: SantaLiveData): void {
     if (!this.isMultiplayer || this.isHost) return;
     this.lastRemoteSantaAtMs = santa.updatedAtMs || Date.now();
-    if (!this.remoteSantaTarget && Math.hypot(santa.x - this.santaPos.x, santa.z - this.santaPos.z) > 12) {
-      this.santaPos.set(santa.x, 0, santa.z);
-      this.santaYaw = santa.yaw;
+    if (!this.remoteSantaTarget) {
+      const primary = this.santas[0];
+      if (primary && Math.hypot(santa.x - primary.pos.x, santa.z - primary.pos.z) > 12) {
+        primary.pos.set(santa.x, 0, santa.z);
+        primary.yaw = santa.yaw;
+      }
+      if (Array.isArray(santa.extras)) {
+        santa.extras.forEach((ex, i) => {
+          const agent = this.santas[i + 1];
+          if (agent && Math.hypot(ex.x - agent.pos.x, ex.z - agent.pos.z) > 12) {
+            agent.pos.set(ex.x, 0, ex.z);
+            agent.yaw = ex.yaw;
+          }
+        });
+      }
     }
     this.remoteSantaTarget = santa;
   }
@@ -1003,12 +1119,14 @@ export class MazeEngine {
 
     const idSet = new Set(collectedOrnaments);
     let newlyCollected = false;
+    let changed = false;
 
     for (const o of this.ornaments) {
       if (idSet.has(o.id) && !o.collected) {
         o.collected = true;
         o.group.visible = false;
         newlyCollected = true;
+        changed = true;
       }
     }
 
@@ -1026,6 +1144,7 @@ export class MazeEngine {
       this.unlockExitGateVisuals();
       this.audio.playExitUnlocked();
       this.showBanner('All ornaments recovered! Follow the EXIT compass or Map to escape!', 6.0);
+      changed = true;
     }
 
     // Ensure any weapon wave triggered on host/room is spawned identically on all clients
@@ -1035,6 +1154,7 @@ export class MazeEngine {
       this.spawnWeaponWave(this.nextWeaponWaveIndex, !this.isHost);
       this.nextWeaponWaveIndex += 1;
       this.nextWeaponSpawnAt = this.nextWeaponWaveIndex * WEAPON_SPAWN_INTERVAL;
+      changed = true;
     }
 
     for (const wid of collectedWeapons) {
@@ -1043,6 +1163,7 @@ export class MazeEngine {
       if (wp && !wp.collected) {
         wp.collected = true;
         wp.group.visible = false;
+        changed = true;
       }
     }
 
@@ -1052,6 +1173,7 @@ export class MazeEngine {
       if (bat && !bat.collected) {
         bat.collected = true;
         bat.group.visible = false;
+        changed = true;
       }
     }
 
@@ -1061,24 +1183,32 @@ export class MazeEngine {
       if (trap && !trap.triggered) {
         trap.triggered = true;
         trap.teethGroup.rotation.x = 0.85;
+        changed = true;
       }
     }
 
     if (santaStunNonce > this.lastSeenStunNonce) {
       this.lastSeenStunNonce = santaStunNonce;
-      if (this.santaStunRemaining < 28) {
-        this.santaStunRemaining = 30.0;
-        this.santaAlerted = false;
-        this.santaAlertTimer = 0;
-        this.santaCurrentSpeed = 0;
-        this.santaVelX = 0;
-        this.santaVelZ = 0;
-        this.audio.playSantaStunned();
-        this.showBanner('Evil Santa stunned for 30 seconds!', 4.5);
+      const anyFreshlyStunned = this.santas.some((s) => s.stunRemaining >= 27);
+      if (!anyFreshlyStunned) {
+        const target = this.santas.find((s) => s.stunRemaining <= 0) || this.santas[0];
+        if (target) {
+          target.stunRemaining = 30.0;
+          target.alerted = false;
+          target.alertTimer = 0;
+          target.currentSpeed = 0;
+          target.velX = 0;
+          target.velZ = 0;
+          this.audio.playSantaStunned();
+          this.showBanner('Evil Santa stunned for 30 seconds!', 4.5);
+        }
       }
+      changed = true;
     }
 
-    this.pushHud();
+    if (changed) {
+      this.pushHud();
+    }
   }
 
   public setChatOpen(open: boolean): void {
@@ -1248,10 +1378,41 @@ export class MazeEngine {
 
     const weaponType = this.equippedWeapon;
     const spec = WEAPON_SPECS[weaponType];
-    const distToSanta = Math.hypot(this.santaPos.x - this.playerPos.x, this.santaPos.z - this.playerPos.z);
 
-    // Don't waste melee Candy Bat if swung miles away from Santa
-    if (spec.kind === 'melee' && distToSanta > spec.range + 1.2) {
+    let minDistAny = Infinity;
+    let bestHitSanta: SantaAgent | null = null;
+    let bestHitDist = Infinity;
+
+    for (const s of this.santas) {
+      const d = Math.hypot(s.pos.x - this.playerPos.x, s.pos.z - this.playerPos.z);
+      if (d < minDistAny) minDistAny = d;
+
+      const aimAngle = Math.abs(this.getRelativeAngleDeg(s.pos.x, s.pos.z));
+      const lateralMissDist = d * Math.sin(THREE.MathUtils.degToRad(Math.min(89, aimAngle)));
+      const maxAngle = spec.kind === 'melee' ? 68 : 34;
+
+      const losClear = hasLineOfSight(
+        this.mazeData.grid,
+        this.playerPos.x,
+        this.playerPos.z,
+        s.pos.x,
+        s.pos.z,
+        CELL_SIZE
+      );
+
+      const hitsThis =
+        d <= spec.range &&
+        (aimAngle <= maxAngle || lateralMissDist <= spec.hitRadius) &&
+        losClear;
+
+      if (hitsThis && d < bestHitDist) {
+        bestHitDist = d;
+        bestHitSanta = s;
+      }
+    }
+
+    // Don't waste melee Candy Bat if swung miles away from every Santa
+    if (spec.kind === 'melee' && minDistAny > spec.range + 1.2) {
       this.weaponRecoilTimer = 0.25;
       this.audio.playWeaponFire(weaponType);
       this.showBanner(`Too far for Heavy Candy Bat — get within ${spec.range}m of Santa!`, 2.4);
@@ -1261,32 +1422,15 @@ export class MazeEngine {
     this.weaponRecoilTimer = 0.3;
     this.audio.playWeaponFire(weaponType);
 
-    const aimAngle = Math.abs(this.getRelativeAngleDeg(this.santaPos.x, this.santaPos.z));
-    const lateralMissDist = distToSanta * Math.sin(THREE.MathUtils.degToRad(Math.min(89, aimAngle)));
-    const maxAngle = spec.kind === 'melee' ? 68 : 34;
-
-    const losClear = hasLineOfSight(
-      this.mazeData.grid,
-      this.playerPos.x,
-      this.playerPos.z,
-      this.santaPos.x,
-      this.santaPos.z,
-      CELL_SIZE
-    );
-
-    const hitSanta =
-      distToSanta <= spec.range &&
-      (aimAngle <= maxAngle || lateralMissDist <= spec.hitRadius) &&
-      losClear;
+    const hitSanta = bestHitSanta !== null;
 
     // Show laser/frost tracer for ranged weapons
     if (spec.kind === 'ranged') {
       _vecForward.set(0, 0, -1).applyEuler(this.camera.rotation);
       const startPt = this.camera.position.clone().add(new THREE.Vector3(0, -0.14, 0));
-      const endDist = hitSanta ? distToSanta : spec.range;
-      const endPt = hitSanta
-        ? new THREE.Vector3(this.santaPos.x, 1.5, this.santaPos.z)
-        : startPt.clone().addScaledVector(_vecForward, endDist);
+      const endPt = bestHitSanta
+        ? new THREE.Vector3(bestHitSanta.pos.x, 1.5, bestHitSanta.pos.z)
+        : startPt.clone().addScaledVector(_vecForward, spec.range);
       const posAttr = this.shotTracerLine.geometry.getAttribute('position') as THREE.BufferAttribute;
       posAttr.setXYZ(0, startPt.x, startPt.y, startPt.z);
       posAttr.setXYZ(1, endPt.x, endPt.y, endPt.z);
@@ -1300,26 +1444,62 @@ export class MazeEngine {
     this.localShotCount += 1;
     this.lastShotHit = hitSanta;
 
-    if (hitSanta) {
-      this.santaStunRemaining = spec.stunSeconds;
-      this.santaAlerted = false;
-      this.santaAlertTimer = 0;
-      this.santaCurrentSpeed = 0;
-      this.santaVelX = 0;
-      this.santaVelZ = 0;
+    if (bestHitSanta) {
+      bestHitSanta.stunRemaining = spec.stunSeconds;
+      bestHitSanta.alerted = false;
+      bestHitSanta.alertTimer = 0;
+      bestHitSanta.currentSpeed = 0;
+      bestHitSanta.velX = 0;
+      bestHitSanta.velZ = 0;
       this.audio.playSantaStunned();
-      this.showBanner(`Direct hit with ${spec.label}! Santa stunned for 30 seconds!`, 5.0);
+      const labelSuffix = this.santas.length > 1 ? ` #${bestHitSanta.index + 1}` : '';
+      this.showBanner(`Direct hit with ${spec.label}! Santa${labelSuffix} stunned for 30 seconds!`, 5.0);
 
       if (this.isMultiplayer) {
         this.lastSeenStunNonce += 1;
         this.mpCallbacks.onTriggerSantaStun?.();
+        if (this.isHost) {
+          this.lastSantaSyncMs = performance.now();
+          this.mpCallbacks.onHostSantaSync?.(this.buildSantaSyncPayload());
+        }
       }
     } else {
       this.showBanner(`${spec.label} missed! Find another weapon drop.`, 3.0);
     }
 
     this.pushLocalPlayerSync(true);
-    this.pushHud(distToSanta);
+    this.pushHud();
+  }
+
+  private getNearbyFallenTeammate(): { uid: string; displayName: string; distance: number } | null {
+    if (!this.isMultiplayer || !this.alive || this.spectating) return null;
+    let best: { uid: string; displayName: string; distance: number } | null = null;
+    for (const rig of this.remotePlayers.values()) {
+      if (rig.alive || rig.escaped) continue;
+      const d = Math.hypot(rig.targetX - this.playerPos.x, rig.targetZ - this.playerPos.z);
+      if (d <= 2.9 && (!best || d < best.distance)) {
+        best = { uid: rig.uid, displayName: rig.displayName, distance: d };
+      }
+    }
+    return best;
+  }
+
+  public reviveNearbyTeammate(): void {
+    if (this.phase !== 'playing' || !this.isMultiplayer || !this.alive || this.spectating) return;
+    if (this.playerTrapStunRemaining > 0) {
+      this.showBanner('Cannot revive while trapped!', 2.0);
+      return;
+    }
+    const now = performance.now();
+    if (now - this.lastReviveClickMs < 900) return;
+
+    const target = this.getNearbyFallenTeammate();
+    if (!target) return;
+
+    this.lastReviveClickMs = now;
+    this.audio.playOrnamentPickup();
+    this.showBanner(`Reviving ${target.displayName}...`, 2.5);
+    this.mpCallbacks.onReviveTeammate?.(target.uid);
   }
 
   public toggleHudHidden(): void {
@@ -1375,6 +1555,8 @@ export class MazeEngine {
         this.triggerChimeSense();
       } else if (e.code === 'KeyG') {
         this.useEquippedWeapon();
+      } else if (e.code === 'KeyR') {
+        this.reviveNearbyTeammate();
       } else if (e.code === 'Space') {
         e.preventDefault();
         this.triggerDodge();
@@ -1469,7 +1651,7 @@ export class MazeEngine {
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height);
-    this.renderer.setPixelRatio(this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 1.5));
   };
 
   private handleContextLost = (e: Event) => {
@@ -1651,82 +1833,123 @@ export class MazeEngine {
     return cell;
   }
 
+  private pickSpreadPatrolCell(agent: SantaAgent): GridCoord {
+    const { size, grid } = this.mazeData;
+    let fallback = this.pickRandomPatrolCell();
+    let bestScore = -1;
+    for (let tries = 0; tries < 10; tries++) {
+      const r = 1 + Math.floor(Math.random() * (size - 2));
+      const c = 1 + Math.floor(Math.random() * (size - 2));
+      if (grid[r][c] !== 0) continue;
+      if (this.santas.length <= 1) return { r, c };
+      const cw = cellToWorld(r, c, size, CELL_SIZE);
+      let minOtherDist = Infinity;
+      for (const other of this.santas) {
+        if (other.index === agent.index) continue;
+        const d = Math.hypot(cw.x - other.pos.x, cw.z - other.pos.z);
+        if (d < minOtherDist) minOtherDist = d;
+      }
+      if (minOtherDist > bestScore) {
+        bestScore = minOtherDist;
+        fallback = { r, c };
+      }
+    }
+    return fallback;
+  }
+
+  private getPrimaryThreatSanta(): SantaAgent | null {
+    if (this.santas.length === 0) return null;
+    let bestActive: SantaAgent | null = null;
+    let bestActiveDist = Infinity;
+    let bestAny: SantaAgent | null = null;
+    let bestAnyDist = Infinity;
+    for (const s of this.santas) {
+      const d = Math.hypot(this.playerPos.x - s.pos.x, this.playerPos.z - s.pos.z);
+      if (d < bestAnyDist) {
+        bestAnyDist = d;
+        bestAny = s;
+      }
+      if (s.stunRemaining <= 0 && d < bestActiveDist) {
+        bestActiveDist = d;
+        bestActive = s;
+      }
+    }
+    return bestActive || bestAny;
+  }
+
+  private getMinActiveSantaDistance(): { minActiveDist: number; closestActive: SantaAgent | null; anyAlerted: boolean } {
+    let minActiveDist = 999;
+    let closestActive: SantaAgent | null = null;
+    let anyAlerted = false;
+    for (const s of this.santas) {
+      if (s.stunRemaining > 0) continue;
+      if (s.alerted) anyAlerted = true;
+      const d = Math.hypot(this.playerPos.x - s.pos.x, this.playerPos.z - s.pos.z);
+      if (d < minActiveDist) {
+        minActiveDist = d;
+        closestActive = s;
+      }
+    }
+    return { minActiveDist, closestActive, anyAlerted };
+  }
+
   private updateSantaAI(dt: number, nowSec: number, localSprinting: boolean): number {
-    // Non-host multiplayer clients interpolate/extrapolate Host Santa, with automatic local failover if host stalls
+    if (this.santas.length === 0) return 999;
+
+    // Non-host multiplayer clients interpolate/extrapolate Host Santas, with automatic local failover if host stalls
     if (this.isMultiplayer && !this.isHost) {
       const staleMs = Date.now() - this.lastRemoteSantaAtMs;
       if (this.remoteSantaTarget && staleMs < 2400) {
-        this.santaPos.x = THREE.MathUtils.damp(this.santaPos.x, this.remoteSantaTarget.x, 9, dt);
-        this.santaPos.z = THREE.MathUtils.damp(this.santaPos.z, this.remoteSantaTarget.z, 9, dt);
-        if (this.remoteSantaTarget.speed > 0.3 && this.remoteSantaTarget.stunRemaining <= 0) {
-          this.santaPos.x += Math.sin(this.santaYaw) * this.remoteSantaTarget.speed * dt * 0.25;
-          this.santaPos.z += Math.cos(this.santaYaw) * this.remoteSantaTarget.speed * dt * 0.25;
-          this.resolveMazeCollisions(this.santaPos, 0.55);
+        const ageSec = Math.min(0.3, Math.max(0, staleMs / 1000));
+        for (let i = 0; i < this.santas.length; i++) {
+          const s = this.santas[i];
+          const src = i === 0 ? this.remoteSantaTarget : this.remoteSantaTarget.extras?.[i - 1];
+          if (!src) {
+            s.rig.root.position.copy(s.pos);
+            s.rig.root.rotation.y = s.yaw;
+            s.rig.updateAnimation(nowSec, 0, false, s.stunRemaining);
+            continue;
+          }
+
+          let goalX = src.x;
+          let goalZ = src.z;
+          if (src.speed > 0.3 && src.stunRemaining <= 0) {
+            goalX += Math.sin(src.yaw) * src.speed * ageSec;
+            goalZ += Math.cos(src.yaw) * src.speed * ageSec;
+          }
+          s.pos.x = THREE.MathUtils.damp(s.pos.x, goalX, 11, dt);
+          s.pos.z = THREE.MathUtils.damp(s.pos.z, goalZ, 11, dt);
+          this.resolveMazeCollisions(s.pos, 0.55);
+
+          let deltaAngle = src.yaw - s.yaw;
+          while (deltaAngle > Math.PI) deltaAngle -= Math.PI * 2;
+          while (deltaAngle < -Math.PI) deltaAngle += Math.PI * 2;
+          s.yaw += deltaAngle * Math.min(1, dt * 11);
+
+          s.currentSpeed = src.speed;
+          if (src.alerted && !s.alerted) {
+            this.audio.playEvilHoHo(0.7);
+          }
+          s.alerted = src.alerted;
+          if (src.stunRemaining > 0.2) {
+            s.stunRemaining = src.stunRemaining;
+          } else if (s.stunRemaining > 0) {
+            s.stunRemaining = Math.max(0, s.stunRemaining - dt);
+          }
+
+          s.rig.root.position.copy(s.pos);
+          s.rig.root.rotation.y = s.yaw;
+          s.rig.updateAnimation(nowSec, s.currentSpeed, s.alerted, s.stunRemaining);
         }
 
-        let deltaAngle = this.remoteSantaTarget.yaw - this.santaYaw;
-        while (deltaAngle > Math.PI) deltaAngle -= Math.PI * 2;
-        while (deltaAngle < -Math.PI) deltaAngle += Math.PI * 2;
-        this.santaYaw += deltaAngle * Math.min(1, dt * 9);
-
-        this.santaCurrentSpeed = this.remoteSantaTarget.speed;
-        if (this.remoteSantaTarget.alerted && !this.santaAlerted) {
-          this.audio.playEvilHoHo(0.7);
-        }
-        this.santaAlerted = this.remoteSantaTarget.alerted;
-        if (this.remoteSantaTarget.stunRemaining > 0.2) {
-          this.santaStunRemaining = this.remoteSantaTarget.stunRemaining;
-        } else if (this.santaStunRemaining > 0) {
-          this.santaStunRemaining = Math.max(0, this.santaStunRemaining - dt);
-        }
-
-        this.santa.root.position.copy(this.santaPos);
-        this.santa.root.rotation.y = this.santaYaw;
-        this.santa.updateAnimation(nowSec, this.santaCurrentSpeed, this.santaAlerted, this.santaStunRemaining);
-        return Math.hypot(this.playerPos.x - this.santaPos.x, this.playerPos.z - this.santaPos.z);
+        return this.getMinActiveSantaDistance().minActiveDist;
       }
 
-      // Host disconnected or throttled (> 2.4s stale): attempt host claim and keep Santa moving locally
+      // Host disconnected or throttled (> 2.4s stale): attempt host claim and keep Santas moving locally
       if (staleMs >= 3200 && performance.now() - this.lastHostClaimAttemptMs > 3000) {
         this.lastHostClaimAttemptMs = performance.now();
         this.mpCallbacks.onClaimHost?.();
       }
-    }
-
-    // Stunned state (30s knockout)
-    if (this.santaStunRemaining > 0) {
-      const prevStun = this.santaStunRemaining;
-      this.santaStunRemaining = Math.max(0, this.santaStunRemaining - dt);
-      this.santaCurrentSpeed = 0;
-      this.santaVelX = 0;
-      this.santaVelZ = 0;
-      this.santaAlerted = false;
-      this.santaStuckTimer = 0;
-
-      if (prevStun > 3.5 && this.santaStunRemaining <= 3.5) {
-        this.showBanner('Santa is stirring... run!', 2.6);
-      } else if (this.santaStunRemaining <= 0) {
-        this.audio.playEvilHoHo(0.65);
-        this.showBanner('Evil Santa woke up!', 3.0);
-      }
-
-      this.santa.root.position.copy(this.santaPos);
-      this.santa.root.rotation.y = this.santaYaw;
-      this.santa.updateAnimation(nowSec, 0, false, this.santaStunRemaining);
-
-      if (this.isMultiplayer && this.isHost && performance.now() - this.lastSantaSyncMs > 220) {
-        this.lastSantaSyncMs = performance.now();
-        this.mpCallbacks.onHostSantaSync?.({
-          x: this.santaPos.x,
-          z: this.santaPos.z,
-          yaw: this.santaYaw,
-          speed: 0,
-          alerted: false,
-          stunRemaining: this.santaStunRemaining,
-        });
-      }
-
-      return Math.hypot(this.playerPos.x - this.santaPos.x, this.playerPos.z - this.santaPos.z);
     }
 
     const scaling = getLevelScaling(this.level, this.difficulty);
@@ -1753,182 +1976,200 @@ export class MazeEngine {
       }
     }
 
-    let nearestTarget = candidates[0] || {
-      x: this.playerPos.x,
-      z: this.playerPos.z,
-      flashlightOn: false,
-      sprinting: false,
-    };
-    let bestDist = Infinity;
-    let canSeeAny = false;
-    let canHearAny = false;
+    for (const s of this.santas) {
+      // Stunned state (30s knockout)
+      if (s.stunRemaining > 0) {
+        const prevStun = s.stunRemaining;
+        s.stunRemaining = Math.max(0, s.stunRemaining - dt);
+        s.currentSpeed = 0;
+        s.velX = 0;
+        s.velZ = 0;
+        s.alerted = false;
+        s.stuckTimer = 0;
 
-    for (const c of candidates) {
-      const d = Math.hypot(c.x - this.santaPos.x, c.z - this.santaPos.z);
-      const effSight = c.flashlightOn ? scaling.santaSightRange : scaling.santaSightRange * 0.58;
-      const sees =
-        d <= effSight &&
-        hasLineOfSight(this.mazeData.grid, this.santaPos.x, this.santaPos.z, c.x, c.z, CELL_SIZE);
-      const hears = d < (c.sprinting ? 10.5 : 3.4);
+        if (prevStun > 3.5 && s.stunRemaining <= 3.5) {
+          this.showBanner('Santa is stirring... run!', 2.6);
+        } else if (s.stunRemaining <= 0) {
+          this.audio.playEvilHoHo(0.65);
+          this.showBanner('Evil Santa woke up!', 3.0);
+        }
 
-      if (sees) canSeeAny = true;
-      if (hears) canHearAny = true;
-
-      const score = sees ? d * 0.65 : d;
-      if (score < bestDist) {
-        bestDist = score;
-        nearestTarget = c;
+        s.rig.root.position.copy(s.pos);
+        s.rig.root.rotation.y = s.yaw;
+        s.rig.updateAnimation(nowSec, 0, false, s.stunRemaining);
+        continue;
       }
-    }
 
-    const distToTarget = Math.hypot(nearestTarget.x - this.santaPos.x, nearestTarget.z - this.santaPos.z);
-    const santaCell = this.clampToWalkableCell(
-      worldToCell(this.santaPos.x, this.santaPos.z, this.mazeData.size, CELL_SIZE)
-    );
-    const targetCell = this.clampToWalkableCell(
-      worldToCell(nearestTarget.x, nearestTarget.z, this.mazeData.size, CELL_SIZE)
-    );
+      let nearestTarget = candidates[0] || {
+        x: this.playerPos.x,
+        z: this.playerPos.z,
+        flashlightOn: false,
+        sprinting: false,
+      };
+      let bestDist = Infinity;
+      let canSeeAny = false;
+      let canHearAny = false;
 
-    if (canSeeAny || canHearAny) {
-      if (!this.santaAlerted && canSeeAny) {
-        this.audio.playEvilHoHo(0.8);
-      }
-      this.santaAlerted = true;
-      this.santaAlertTimer = 3.2;
-      this.santaLastKnownCell = { ...targetCell };
-    } else if (this.santaAlerted) {
-      this.santaAlertTimer -= dt;
-      const reachedLastKnown =
-        this.santaLastKnownCell &&
-        santaCell.r === this.santaLastKnownCell.r &&
-        santaCell.c === this.santaLastKnownCell.c;
+      for (const c of candidates) {
+        const d = Math.hypot(c.x - s.pos.x, c.z - s.pos.z);
+        const effSight = c.flashlightOn ? scaling.santaSightRange : scaling.santaSightRange * 0.58;
+        const sees =
+          d <= effSight &&
+          hasLineOfSight(this.mazeData.grid, s.pos.x, s.pos.z, c.x, c.z, CELL_SIZE);
+        const hears = d < (c.sprinting ? 10.5 : 3.4);
 
-      if (this.santaAlertTimer <= 0 || reachedLastKnown) {
-        this.santaAlerted = false;
-        this.santaLastKnownCell = null;
-        this.santaPatrolTarget = this.pickRandomPatrolCell();
-        if (!this.statusBanner && Math.hypot(this.playerPos.x - this.santaPos.x, this.playerPos.z - this.santaPos.z) < 22) {
-          this.showBanner('You juked Santa and broke line of sight!', 2.5);
+        if (sees) canSeeAny = true;
+        if (hears) canHearAny = true;
+
+        const score = sees ? d * 0.65 : d;
+        if (score < bestDist) {
+          bestDist = score;
+          nearestTarget = c;
         }
       }
-    }
 
-    const rageBoost = 1 + Math.min(4, this.ornamentsCollected) * 0.025;
-    const targetSpeed = (this.santaAlerted ? scaling.santaChaseSpeed : scaling.santaBaseSpeed) * rageBoost;
-    this.santaCurrentSpeed = THREE.MathUtils.damp(this.santaCurrentSpeed, targetSpeed, 5, dt);
-
-    let moveTargetX = nearestTarget.x;
-    let moveTargetZ = nearestTarget.z;
-
-    const directCorridorClear =
-      canSeeAny &&
-      distToTarget < 10.5 &&
-      this.hasClearCorridor(this.santaPos.x, this.santaPos.z, nearestTarget.x, nearestTarget.z, 0.52);
-
-    if (directCorridorClear) {
-      moveTargetX = nearestTarget.x;
-      moveTargetZ = nearestTarget.z;
-    } else {
-      let goalCell: GridCoord;
-      if (this.santaAlerted && this.santaLastKnownCell) {
-        goalCell = this.clampToWalkableCell(this.santaLastKnownCell);
-      } else {
-        if (
-          !this.santaPatrolTarget ||
-          (santaCell.r === this.santaPatrolTarget.r && santaCell.c === this.santaPatrolTarget.c)
-        ) {
-          this.santaPatrolTarget = this.pickRandomPatrolCell();
-        }
-        goalCell = this.clampToWalkableCell(this.santaPatrolTarget);
-      }
-
-      const nextStep = findNextStepBFS(this.mazeData.grid, santaCell, goalCell);
-      if (nextStep) {
-        const nextW = cellToWorld(nextStep.r, nextStep.c, this.mazeData.size, CELL_SIZE);
-        const curW = cellToWorld(santaCell.r, santaCell.c, this.mazeData.size, CELL_SIZE);
-        const distToCurCenter = Math.hypot(curW.x - this.santaPos.x, curW.z - this.santaPos.z);
-
-        // Align toward current corridor center before turning corners so Santa never snags on wall edges
-        if (
-          distToCurCenter > 0.55 &&
-          !this.hasClearCorridor(this.santaPos.x, this.santaPos.z, nextW.x, nextW.z, 0.5)
-        ) {
-          moveTargetX = curW.x;
-          moveTargetZ = curW.z;
-        } else {
-          moveTargetX = nextW.x;
-          moveTargetZ = nextW.z;
-        }
-      } else {
-        const neighbor = this.pickOpenNeighborCell(santaCell);
-        const nw = cellToWorld(neighbor.r, neighbor.c, this.mazeData.size, CELL_SIZE);
-        moveTargetX = nw.x;
-        moveTargetZ = nw.z;
-        this.santaPatrolTarget = this.pickRandomPatrolCell();
-      }
-    }
-
-    const dx = moveTargetX - this.santaPos.x;
-    const dz = moveTargetZ - this.santaPos.z;
-    const len = Math.hypot(dx, dz);
-
-    if (len > 0.05) {
-      const desiredVx = (dx / len) * this.santaCurrentSpeed;
-      const desiredVz = (dz / len) * this.santaCurrentSpeed;
-      this.santaVelX = THREE.MathUtils.damp(this.santaVelX, desiredVx, 5.4, dt);
-      this.santaVelZ = THREE.MathUtils.damp(this.santaVelZ, desiredVz, 5.4, dt);
-
-      this.santaPos.x += this.santaVelX * dt;
-      this.santaPos.z += this.santaVelZ * dt;
-      this.resolveMazeCollisions(this.santaPos, 0.55);
-
-      const desiredYaw = Math.atan2(this.santaVelX, this.santaVelZ);
-      let deltaAngle = desiredYaw - this.santaYaw;
-      while (deltaAngle > Math.PI) deltaAngle -= Math.PI * 2;
-      while (deltaAngle < -Math.PI) deltaAngle += Math.PI * 2;
-      this.santaYaw += deltaAngle * Math.min(1, dt * 6.0);
-    }
-
-    // Stuck watchdog: if Santa stalls against a corner for > 0.65s, center him and pick fresh path
-    this.santaStuckTimer += dt;
-    if (this.santaStuckTimer >= 0.65) {
-      const progressed = Math.hypot(
-        this.santaPos.x - this.santaLastProgressPos.x,
-        this.santaPos.z - this.santaLastProgressPos.z
+      const distToTarget = Math.hypot(nearestTarget.x - s.pos.x, nearestTarget.z - s.pos.z);
+      const santaCell = this.clampToWalkableCell(
+        worldToCell(s.pos.x, s.pos.z, this.mazeData.size, CELL_SIZE)
       );
-      if (progressed < 0.25 && this.santaCurrentSpeed > 0.4) {
-        const safeW = cellToWorld(santaCell.r, santaCell.c, this.mazeData.size, CELL_SIZE);
-        this.santaPos.x = THREE.MathUtils.lerp(this.santaPos.x, safeW.x, 0.45);
-        this.santaPos.z = THREE.MathUtils.lerp(this.santaPos.z, safeW.z, 0.45);
-        this.santaVelX = 0;
-        this.santaVelZ = 0;
-        this.santaPatrolTarget = this.pickRandomPatrolCell();
-        if (this.santaAlerted && !canSeeAny) {
-          this.santaAlerted = false;
-          this.santaLastKnownCell = null;
+      const targetCell = this.clampToWalkableCell(
+        worldToCell(nearestTarget.x, nearestTarget.z, this.mazeData.size, CELL_SIZE)
+      );
+
+      if (canSeeAny || canHearAny) {
+        if (!s.alerted && canSeeAny) {
+          this.audio.playEvilHoHo(0.8);
+        }
+        s.alerted = true;
+        s.alertTimer = 3.2;
+        s.lastKnownCell = { ...targetCell };
+      } else if (s.alerted) {
+        s.alertTimer -= dt;
+        const reachedLastKnown =
+          s.lastKnownCell &&
+          santaCell.r === s.lastKnownCell.r &&
+          santaCell.c === s.lastKnownCell.c;
+
+        if (s.alertTimer <= 0 || reachedLastKnown) {
+          s.alerted = false;
+          s.lastKnownCell = null;
+          s.patrolTarget = this.pickSpreadPatrolCell(s);
+          if (!this.statusBanner && Math.hypot(this.playerPos.x - s.pos.x, this.playerPos.z - s.pos.z) < 22) {
+            this.showBanner('You juked Santa and broke line of sight!', 2.5);
+          }
         }
       }
-      this.santaLastProgressPos.copy(this.santaPos);
-      this.santaStuckTimer = 0;
+
+      const rageBoost = 1 + Math.min(4, this.ornamentsCollected) * 0.025;
+      const targetSpeed = (s.alerted ? scaling.santaChaseSpeed : scaling.santaBaseSpeed) * rageBoost;
+      s.currentSpeed = THREE.MathUtils.damp(s.currentSpeed, targetSpeed, 5, dt);
+
+      let moveTargetX = nearestTarget.x;
+      let moveTargetZ = nearestTarget.z;
+
+      const directCorridorClear =
+        canSeeAny &&
+        distToTarget < 10.5 &&
+        this.hasClearCorridor(s.pos.x, s.pos.z, nearestTarget.x, nearestTarget.z, 0.52);
+
+      if (directCorridorClear) {
+        moveTargetX = nearestTarget.x;
+        moveTargetZ = nearestTarget.z;
+      } else {
+        let goalCell: GridCoord;
+        if (s.alerted && s.lastKnownCell) {
+          goalCell = this.clampToWalkableCell(s.lastKnownCell);
+        } else {
+          if (
+            !s.patrolTarget ||
+            (santaCell.r === s.patrolTarget.r && santaCell.c === s.patrolTarget.c)
+          ) {
+            s.patrolTarget = this.pickSpreadPatrolCell(s);
+          }
+          goalCell = this.clampToWalkableCell(s.patrolTarget);
+        }
+
+        const nextStep = findNextStepBFS(this.mazeData.grid, santaCell, goalCell);
+        if (nextStep) {
+          const nextW = cellToWorld(nextStep.r, nextStep.c, this.mazeData.size, CELL_SIZE);
+          const curW = cellToWorld(santaCell.r, santaCell.c, this.mazeData.size, CELL_SIZE);
+          const distToCurCenter = Math.hypot(curW.x - s.pos.x, curW.z - s.pos.z);
+
+          // Align toward current corridor center before turning corners so Santa never snags on wall edges
+          if (
+            distToCurCenter > 0.55 &&
+            !this.hasClearCorridor(s.pos.x, s.pos.z, nextW.x, nextW.z, 0.5)
+          ) {
+            moveTargetX = curW.x;
+            moveTargetZ = curW.z;
+          } else {
+            moveTargetX = nextW.x;
+            moveTargetZ = nextW.z;
+          }
+        } else {
+          const neighbor = this.pickOpenNeighborCell(santaCell);
+          const nw = cellToWorld(neighbor.r, neighbor.c, this.mazeData.size, CELL_SIZE);
+          moveTargetX = nw.x;
+          moveTargetZ = nw.z;
+          s.patrolTarget = this.pickSpreadPatrolCell(s);
+        }
+      }
+
+      const dx = moveTargetX - s.pos.x;
+      const dz = moveTargetZ - s.pos.z;
+      const len = Math.hypot(dx, dz);
+
+      if (len > 0.05) {
+        const desiredVx = (dx / len) * s.currentSpeed;
+        const desiredVz = (dz / len) * s.currentSpeed;
+        s.velX = THREE.MathUtils.damp(s.velX, desiredVx, 5.4, dt);
+        s.velZ = THREE.MathUtils.damp(s.velZ, desiredVz, 5.4, dt);
+
+        s.pos.x += s.velX * dt;
+        s.pos.z += s.velZ * dt;
+        this.resolveMazeCollisions(s.pos, 0.55);
+
+        const desiredYaw = Math.atan2(s.velX, s.velZ);
+        let deltaAngle = desiredYaw - s.yaw;
+        while (deltaAngle > Math.PI) deltaAngle -= Math.PI * 2;
+        while (deltaAngle < -Math.PI) deltaAngle += Math.PI * 2;
+        s.yaw += deltaAngle * Math.min(1, dt * 6.0);
+      }
+
+      // Stuck watchdog: if Santa stalls against a corner for > 0.65s, center him and pick fresh path
+      s.stuckTimer += dt;
+      if (s.stuckTimer >= 0.65) {
+        const progressed = Math.hypot(
+          s.pos.x - s.lastProgressPos.x,
+          s.pos.z - s.lastProgressPos.z
+        );
+        if (progressed < 0.25 && s.currentSpeed > 0.4) {
+          const safeW = cellToWorld(santaCell.r, santaCell.c, this.mazeData.size, CELL_SIZE);
+          s.pos.x = THREE.MathUtils.lerp(s.pos.x, safeW.x, 0.45);
+          s.pos.z = THREE.MathUtils.lerp(s.pos.z, safeW.z, 0.45);
+          s.velX = 0;
+          s.velZ = 0;
+          s.patrolTarget = this.pickSpreadPatrolCell(s);
+          if (s.alerted && !canSeeAny) {
+            s.alerted = false;
+            s.lastKnownCell = null;
+          }
+        }
+        s.lastProgressPos.copy(s.pos);
+        s.stuckTimer = 0;
+      }
+
+      s.rig.root.position.copy(s.pos);
+      s.rig.root.rotation.y = s.yaw;
+      s.rig.updateAnimation(nowSec, s.currentSpeed, s.alerted, 0);
     }
 
-    this.santa.root.position.copy(this.santaPos);
-    this.santa.root.rotation.y = this.santaYaw;
-    this.santa.updateAnimation(nowSec, this.santaCurrentSpeed, this.santaAlerted, 0);
-
-    if (this.isMultiplayer && this.isHost && performance.now() - this.lastSantaSyncMs > 220) {
+    if (this.isMultiplayer && this.isHost && performance.now() - this.lastSantaSyncMs > 260) {
       this.lastSantaSyncMs = performance.now();
-      this.mpCallbacks.onHostSantaSync?.({
-        x: this.santaPos.x,
-        z: this.santaPos.z,
-        yaw: this.santaYaw,
-        speed: this.santaCurrentSpeed,
-        alerted: this.santaAlerted,
-        stunRemaining: 0,
-      });
+      this.mpCallbacks.onHostSantaSync?.(this.buildSantaSyncPayload());
     }
 
-    return Math.hypot(this.playerPos.x - this.santaPos.x, this.playerPos.z - this.santaPos.z);
+    return this.getMinActiveSantaDistance().minActiveDist;
   }
 
   private getRelativeAngleDeg(targetX: number, targetZ: number): number {
@@ -2028,21 +2269,21 @@ export class MazeEngine {
       if (o.collected) continue;
       o.starGroup.rotation.y = nowSec * 1.4 + o.id;
       o.starGroup.position.y = 1.18 + Math.sin(nowSec * 2.4 + o.id) * 0.09;
-      o.light.intensity = 2.2 + Math.sin(nowSec * 3.5 + o.id) * 0.45;
+      o.glowMat.emissiveIntensity = 1.35 + Math.sin(nowSec * 3.5 + o.id) * 0.4;
     }
 
     for (const wp of this.weapons) {
       if (wp.collected) continue;
       wp.weaponMeshGroup.rotation.y = nowSec * 1.6 + wp.id;
       wp.weaponMeshGroup.position.y = 1.05 + Math.sin(nowSec * 2.8 + wp.id) * 0.08;
-      wp.light.intensity = 2.1 + Math.sin(nowSec * 4.0 + wp.id) * 0.4;
+      wp.glowMat.emissiveIntensity = 1.4 + Math.sin(nowSec * 4.0 + wp.id) * 0.45;
     }
 
     for (const bat of this.batteries) {
       if (bat.collected) continue;
       bat.cellGroup.rotation.y = nowSec * 1.9 + bat.id;
       bat.cellGroup.position.y = 0.78 + Math.sin(nowSec * 3.0 + bat.id) * 0.08;
-      bat.light.intensity = 1.9 + Math.sin(nowSec * 4.2 + bat.id) * 0.45;
+      bat.glowMat.emissiveIntensity = 1.95 + Math.sin(nowSec * 4.2 + bat.id) * 0.5;
     }
 
     const elfTargets: { x: number; z: number }[] = [];
@@ -2060,20 +2301,29 @@ export class MazeEngine {
     for (const elf of this.tinyElves) {
       elf.update(dt, nowSec, elfTargets, null, this.mazeData.grid, CELL_SIZE, this.mazeData.size);
     }
-    if (this.elfHelper) {
+    if (this.elfHelper && this.santas.length > 0) {
+      let nearestToElf = this.santas[0];
+      let bestElfDist = Infinity;
+      for (const s of this.santas) {
+        const d = Math.hypot(s.pos.x - this.elfHelper.root.position.x, s.pos.z - this.elfHelper.root.position.z);
+        if (d < bestElfDist) {
+          bestElfDist = d;
+          nearestToElf = s;
+        }
+      }
       const spotted = this.elfHelper.update(
         dt,
         nowSec,
         elfTargets,
-        { x: this.santaPos.x, z: this.santaPos.z },
+        { x: nearestToElf.pos.x, z: nearestToElf.pos.z },
         this.mazeData.grid,
         CELL_SIZE,
         this.mazeData.size
       );
-      if (spotted && this.santaStunRemaining <= 0 && (!this.isMultiplayer || this.isHost)) {
-        this.santaAlerted = true;
-        this.santaAlertTimer = Math.max(this.santaAlertTimer, 3.0);
-        this.santaLastKnownCell = this.clampToWalkableCell(
+      if (spotted && nearestToElf.stunRemaining <= 0 && (!this.isMultiplayer || this.isHost)) {
+        nearestToElf.alerted = true;
+        nearestToElf.alertTimer = Math.max(nearestToElf.alertTimer, 3.0);
+        nearestToElf.lastKnownCell = this.clampToWalkableCell(
           worldToCell(spotted.x, spotted.z, this.mazeData.size, CELL_SIZE)
         );
       }
@@ -2162,18 +2412,22 @@ export class MazeEngine {
     if (this.jumpscareActive) {
       this.jumpscareTimer -= dt;
       const lookY = 2.15;
+      const jsSanta = this.santas[this.jumpscareSantaIndex] || this.santas[0];
+      const lookX = jsSanta ? jsSanta.pos.x : this.playerPos.x;
+      const lookZ = jsSanta ? jsSanta.pos.z : this.playerPos.z;
       this.camera.position.set(
         this.playerPos.x + (Math.random() - 0.5) * 0.14,
         EYE_HEIGHT + (Math.random() - 0.5) * 0.14,
         this.playerPos.z + (Math.random() - 0.5) * 0.14
       );
-      this.camera.lookAt(this.santaPos.x, lookY, this.santaPos.z);
+      this.camera.lookAt(lookX, lookY, lookZ);
       this.flashlight.position.copy(this.camera.position);
-      this.flashlightTarget.position.set(this.santaPos.x, lookY, this.santaPos.z);
+      this.flashlightTarget.position.set(lookX, lookY, lookZ);
       this.flashlight.intensity = 10;
 
       if (this.jumpscareTimer <= 0) {
         this.jumpscareActive = false;
+        this.fallenPos.copy(this.playerPos);
         this.alive = false;
         this.flashlightOn = false;
         this.setEquippedWeapon(null);
@@ -2186,7 +2440,7 @@ export class MazeEngine {
           if (anyTeammateAlive) {
             this.spectating = true;
             this.phase = 'playing';
-            this.showBanner('Santa caught you! Spectating surviving teammates...', 5.0);
+            this.showBanner('Santa downed you! Teammates can revive you — spectating...', 5.0);
             this.pushHud();
             return;
           }
@@ -2215,6 +2469,7 @@ export class MazeEngine {
     if (this.chimeCooldown > 0) this.chimeCooldown = Math.max(0, this.chimeCooldown - dt);
     if (this.dodgeCooldown > 0) this.dodgeCooldown = Math.max(0, this.dodgeCooldown - dt);
     if (this.weaponRecoilTimer > 0) this.weaponRecoilTimer = Math.max(0, this.weaponRecoilTimer - dt);
+    if (this.reviveGraceTimer > 0) this.reviveGraceTimer = Math.max(0, this.reviveGraceTimer - dt);
 
     if (this.chimeDisplayTimer > 0) {
       this.chimeDisplayTimer = Math.max(0, this.chimeDisplayTimer - dt);
@@ -2334,12 +2589,13 @@ export class MazeEngine {
     }
 
     const santaDist = this.updateSantaAI(dt, nowSec, sprinting);
+    const activeThreat = this.getMinActiveSantaDistance();
 
     let tremorX = 0;
     let tremorY = 0;
-    if (!this.spectating && this.santaStunRemaining <= 0 && santaDist < 12) {
-      const strength = Math.pow(1 - santaDist / 12, 2) * 0.028;
-      const stompPulse = Math.max(0, Math.sin(nowSec * (this.santaAlerted ? 9.5 : 5.4)));
+    if (!this.spectating && activeThreat.minActiveDist < 12) {
+      const strength = Math.pow(1 - activeThreat.minActiveDist / 12, 2) * 0.028;
+      const stompPulse = Math.max(0, Math.sin(nowSec * (activeThreat.anyAlerted ? 9.5 : 5.4)));
       tremorX = (Math.random() - 0.5) * strength * stompPulse;
       tremorY = (Math.random() - 0.5) * strength * stompPulse;
     }
@@ -2384,15 +2640,15 @@ export class MazeEngine {
     if (this.moonLight) this.moonLight.intensity = 0.1 + 0.32 * this.visionFactor;
     this.playerAmbientGlow.intensity = 0.12 + 0.7 * this.visionFactor;
 
-    this.updateFlashlightTransform(nowSec, this.spectating || this.santaStunRemaining > 0 ? 999 : santaDist);
+    this.updateFlashlightTransform(nowSec, this.spectating ? 999 : santaDist);
 
     this.audio.updateAmbience(
       nowSec,
       this.spectating ? 30 : santaDist,
-      this.santaAlerted,
+      activeThreat.anyAlerted,
       !this.spectating && wantsMove,
       sprinting,
-      this.santaStunRemaining > 0
+      activeThreat.closestActive === null
     );
 
     if (this.alive && !this.spectating) {
@@ -2514,12 +2770,18 @@ export class MazeEngine {
         }
       }
 
-      // Check Santa Catch -> Jumpscare (only if Santa is NOT stunned!)
-      if (this.santaStunRemaining <= 0 && santaDist < 1.24) {
-        this.jumpscareActive = true;
-        this.jumpscareTimer = 0.68;
-        this.audio.playJumpscare();
-        return;
+      // Check Santa Catch -> Jumpscare (only if that Santa is NOT stunned & no revive grace!)
+      if (this.reviveGraceTimer <= 0) {
+        const catcher = this.santas.find(
+          (s) => s.stunRemaining <= 0 && Math.hypot(this.playerPos.x - s.pos.x, this.playerPos.z - s.pos.z) < 1.24
+        );
+        if (catcher) {
+          this.jumpscareSantaIndex = catcher.index;
+          this.jumpscareActive = true;
+          this.jumpscareTimer = 0.68;
+          this.audio.playJumpscare();
+          return;
+        }
       }
     }
 
@@ -2527,7 +2789,7 @@ export class MazeEngine {
       this.pushLocalPlayerSync(false);
     }
 
-    const hudIntervalMs = !this.flashlightOn && this.battery < 99.9 ? 32 : 55;
+    const hudIntervalMs = 100;
     if (performance.now() - this.lastHudPushMs > hudIntervalMs) {
       this.pushHud(santaDist);
     }
@@ -2566,15 +2828,18 @@ export class MazeEngine {
 
   private pushHud(santaDistOverride?: number, overrides?: Partial<HudSnapshot>): void {
     this.lastHudPushMs = performance.now();
+    const threatSanta = this.getPrimaryThreatSanta();
     const santaDist =
       santaDistOverride ??
-      (this.santaPos
-        ? Math.hypot(this.playerPos.x - this.santaPos.x, this.playerPos.z - this.santaPos.z)
+      (threatSanta
+        ? Math.hypot(this.playerPos.x - threatSanta.pos.x, this.playerPos.z - threatSanta.pos.z)
         : 99);
 
-    const santaAngleDeg = this.santaPos
-      ? this.getRelativeAngleDeg(this.santaPos.x, this.santaPos.z)
+    const santaAngleDeg = threatSanta
+      ? this.getRelativeAngleDeg(threatSanta.pos.x, threatSanta.pos.z)
       : 0;
+    const santaAlerted = threatSanta ? threatSanta.alerted : false;
+    const santaStunRemaining = threatSanta ? threatSanta.stunRemaining : 0;
 
     const fwdX = -Math.sin(this.yaw);
     const fwdZ = -Math.cos(this.yaw);
@@ -2637,7 +2902,16 @@ export class MazeEngine {
       });
 
       const pNorm = toNorm(this.playerPos.x, this.playerPos.z);
-      const sNorm = toNorm(this.santaPos.x, this.santaPos.z);
+      const sNorm = threatSanta ? toNorm(threatSanta.pos.x, threatSanta.pos.z) : { normX: 0.5, normZ: 0.5 };
+      const santas = this.santas.map((s) => {
+        const sn = toNorm(s.pos.x, s.pos.z);
+        return {
+          normX: sn.normX,
+          normZ: sn.normZ,
+          alerted: s.alerted,
+          stunRemaining: s.stunRemaining,
+        };
+      });
       const eNorm = this.exitGate
         ? toNorm(this.exitGate.group.position.x, this.exitGate.group.position.z)
         : { normX: 0.96, normZ: 0.96 };
@@ -2666,8 +2940,9 @@ export class MazeEngine {
         playerYaw: this.yaw,
         santaNormX: sNorm.normX,
         santaNormZ: sNorm.normZ,
-        santaAlerted: this.santaAlerted,
-        santaStunRemaining: this.santaStunRemaining,
+        santaAlerted,
+        santaStunRemaining,
+        santas,
         exitNormX: eNorm.normX,
         exitNormZ: eNorm.normZ,
         exitUnlocked: this.exitUnlocked,
@@ -2684,10 +2959,21 @@ export class MazeEngine {
       };
     }
 
+    const nearbyReviveTarget = this.getNearbyFallenTeammate();
+    let fallenTeammatesCount = 0;
+    if (this.isMultiplayer) {
+      for (const rig of this.remotePlayers.values()) {
+        if (!rig.alive && !rig.escaped) {
+          fallenTeammatesCount += 1;
+        }
+      }
+    }
+
     this.onHudUpdate({
       phase: this.phase,
       difficulty: this.difficulty,
       level: this.level,
+      santaCount: this.santas.length || getLevelScaling(this.level, this.difficulty).santaCount,
       ornamentsCollected: this.ornamentsCollected,
       ornamentsTotal: this.mazeData
         ? this.mazeData.ornaments.length
@@ -2700,8 +2986,8 @@ export class MazeEngine {
       elapsedSeconds: this.elapsedSeconds,
       santaDistance: santaDist,
       santaAngleDeg,
-      santaAlerted: this.santaAlerted,
-      santaStunRemaining: this.santaStunRemaining,
+      santaAlerted,
+      santaStunRemaining,
       playerHeadingDeg,
       exitAngleDeg,
       exitDistance,
@@ -2728,6 +3014,8 @@ export class MazeEngine {
       alive: this.alive,
       spectating: this.spectating,
       chatOpen: this.chatOpen,
+      nearbyReviveTarget,
+      fallenTeammatesCount,
       mapState,
       ...overrides,
     });

@@ -7,7 +7,7 @@ export interface OrnamentProp {
   collected: boolean;
   group: THREE.Group;
   starGroup: THREE.Group;
-  light: THREE.PointLight;
+  glowMat: THREE.MeshStandardMaterial;
 }
 
 export interface ExitGateProp {
@@ -126,11 +126,6 @@ export function createOrnamentProp(
   const halo = new THREE.Mesh(track(new THREE.TorusGeometry(0.36, 0.02, 8, 24)), goldStarMat);
   starGroup.add(halo);
 
-  // Warm golden beacon light
-  const light = new THREE.PointLight(0xffb838, 2.6, 9.0, 1.7);
-  light.position.y = 1.25;
-  group.add(light);
-
   return {
     id,
     r,
@@ -138,7 +133,7 @@ export function createOrnamentProp(
     collected: false,
     group,
     starGroup,
-    light,
+    glowMat: goldStarMat,
   };
 }
 
@@ -257,7 +252,7 @@ export interface WeaponProp {
   collected: boolean;
   group: THREE.Group;
   weaponMeshGroup: THREE.Group;
-  light: THREE.PointLight;
+  glowMat: THREE.MeshStandardMaterial;
 }
 
 export function buildWeaponCompositeMesh(
@@ -428,10 +423,6 @@ export function createWeaponProp(
   weaponMeshGroup.scale.setScalar(1.35);
   group.add(weaponMeshGroup);
 
-  const light = new THREE.PointLight(0x38bdf8, 2.5, 9.5, 1.7);
-  light.position.y = 1.25;
-  group.add(light);
-
   return {
     id,
     type,
@@ -440,7 +431,7 @@ export function createWeaponProp(
     collected: false,
     group,
     weaponMeshGroup,
-    light,
+    glowMat: trimMat,
   };
 }
 
@@ -451,7 +442,7 @@ export interface BatteryProp {
   collected: boolean;
   group: THREE.Group;
   cellGroup: THREE.Group;
-  light: THREE.PointLight;
+  glowMat: THREE.MeshStandardMaterial;
 }
 
 export function createBatteryProp(
@@ -530,10 +521,6 @@ export function createBatteryProp(
   ring.position.y = 0.03;
   cellGroup.add(ring);
 
-  const light = new THREE.PointLight(0x10b981, 2.1, 7.5, 1.8);
-  light.position.y = 0.9;
-  group.add(light);
-
   return {
     id,
     r,
@@ -541,7 +528,7 @@ export function createBatteryProp(
     collected: false,
     group,
     cellGroup,
-    light,
+    glowMat: emeraldGlowMat,
   };
 }
 

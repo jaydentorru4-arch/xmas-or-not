@@ -76,6 +76,7 @@ export const DIFFICULTIES: Record<DifficultyId, DifficultyConfig> = {
 export interface LevelScaling {
   level: number;
   mazeSize: number; // always odd (23..45)
+  santaCount: number; // 1 (Lv 1-49), 2 (Lv 50-98), 3 (Lv 99)
   ornamentCount: number;
   batteryCount: number;
   santaBaseSpeed: number;
@@ -88,14 +89,16 @@ export interface LevelScaling {
 export function getLevelScaling(level: number, difficulty: DifficultyId): LevelScaling {
   const lvl = Math.max(1, Math.min(99, Math.floor(level || 1)));
   const base = DIFFICULTIES[difficulty];
-  // Odd maze sizes growing from 23x23 at Lv1 up to 45x45 at Lv99
+  // Odd maze sizes growing smoothly from 23x23 at Lv1 up to 45x45 at Lv99
   const sizeSteps = [23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45];
-  const mazeSize = sizeSteps[Math.min(sizeSteps.length - 1, Math.floor((lvl - 1) / 9))];
-  const ornamentCount = Math.min(18, base.ornamentCount + Math.floor((lvl - 1) * 0.12));
+  const stepIdx = Math.min(sizeSteps.length - 1, Math.floor(((lvl - 1) * (sizeSteps.length - 1)) / 98));
+  const mazeSize = sizeSteps[stepIdx];
+  const santaCount = lvl >= 99 ? 3 : lvl >= 50 ? 2 : 1;
+  const ornamentCount = Math.min(18, base.ornamentCount + Math.floor((lvl - 1) * 0.13));
   const batteryCount = Math.min(14, 5 + Math.floor((lvl - 1) * 0.09));
-  const speedBonus = Math.min(1.5, (lvl - 1) * 0.016);
-  const sightBonus = Math.min(9.0, (lvl - 1) * 0.09);
-  const fogBonus = Math.min(0.045, (lvl - 1) * 0.00045);
+  const speedBonus = Math.min(2.2, (lvl - 1) * 0.0225);
+  const sightBonus = Math.min(12.0, (lvl - 1) * 0.122);
+  const fogBonus = Math.min(0.055, (lvl - 1) * 0.00056);
 
   const tierNames = [
     'Snowdrift Hollow',
@@ -114,6 +117,7 @@ export function getLevelScaling(level: number, difficulty: DifficultyId): LevelS
   return {
     level: lvl,
     mazeSize,
+    santaCount,
     ornamentCount,
     batteryCount,
     santaBaseSpeed: Number((base.santaBaseSpeed + speedBonus).toFixed(2)),
@@ -200,6 +204,7 @@ export interface MazeData {
   grid: number[][]; // 1 = wall, 0 = floor
   playerSpawn: GridCoord;
   santaSpawn: GridCoord;
+  santaSpawns: GridCoord[];
   exitCell: GridCoord;
   ornaments: GridCoord[];
   batteries: GridCoord[];
@@ -272,6 +277,17 @@ export interface RoomPlayerData {
   equippedWeapon: WeaponType | '';
   shotCount: number;
   lastShotHit: boolean;
+  reviveCount?: number;
+  revivedBy?: string;
+}
+
+export interface ExtraSantaState {
+  x: number;
+  z: number;
+  yaw: number;
+  speed: number;
+  alerted: boolean;
+  stunRemaining: number;
 }
 
 export interface SantaLiveData {
@@ -281,6 +297,7 @@ export interface SantaLiveData {
   speed: number;
   alerted: boolean;
   stunRemaining: number;
+  extras?: ExtraSantaState[];
   updatedAtMs?: number;
 }
 
@@ -304,6 +321,13 @@ export interface MapMarkerPlayer {
   stunned?: boolean;
 }
 
+export interface MazeMapSantaMarker {
+  normX: number;
+  normZ: number;
+  alerted: boolean;
+  stunRemaining: number;
+}
+
 export interface MazeMapState {
   mazeSeed: number;
   size: number;
@@ -315,6 +339,7 @@ export interface MazeMapState {
   santaNormZ: number;
   santaAlerted: boolean;
   santaStunRemaining: number;
+  santas: MazeMapSantaMarker[];
   exitNormX: number;
   exitNormZ: number;
   exitUnlocked: boolean;
@@ -328,6 +353,7 @@ export interface HudSnapshot {
   phase: GamePhase;
   difficulty: DifficultyId;
   level: number;
+  santaCount: number;
   ornamentsCollected: number;
   ornamentsTotal: number;
   exitUnlocked: boolean;
@@ -366,5 +392,7 @@ export interface HudSnapshot {
   alive: boolean;
   spectating: boolean;
   chatOpen: boolean;
+  nearbyReviveTarget: { uid: string; displayName: string; distance: number } | null;
+  fallenTeammatesCount: number;
   mapState: MazeMapState | null;
 }

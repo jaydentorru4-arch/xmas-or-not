@@ -6,6 +6,7 @@ import {
   Compass,
   Crosshair,
   Flashlight,
+  HeartPulse,
   Map as MapIcon,
   MessageSquare,
   Pause,
@@ -31,6 +32,7 @@ interface GameHUDProps {
   onToggleFlashlight: () => void;
   onTriggerChime: () => void;
   onUseWeapon: () => void;
+  onReviveTeammate: () => void;
   onDodge: () => void;
   onToggleHudHidden: () => void;
   onLockPointer: () => void;
@@ -91,6 +93,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   onToggleFlashlight,
   onTriggerChime,
   onUseWeapon,
+  onReviveTeammate,
   onDodge,
   onToggleHudHidden,
   onLockPointer,
@@ -230,7 +233,19 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         <div className="flex flex-col gap-1.5 max-w-[calc(100vw-130px)] sm:max-w-none">
           <div className="pointer-events-auto flex flex-col gap-1 bg-[#060913]/88 border border-white/12 rounded-lg px-3 sm:px-4 py-1.5 sm:py-2.5 shrink-0">
             <div className="flex items-center gap-2 sm:gap-2.5 text-xs sm:text-sm font-medium text-slate-100 whitespace-nowrap">
-              <span className="text-[11px] sm:text-xs font-mono-tabular font-semibold text-red-300">Lv {hud.level}</span>
+              <span className="text-[11px] sm:text-xs font-mono-tabular font-semibold text-red-300">
+                Lv {hud.level}
+              </span>
+              {hud.santaCount > 1 && (
+                <>
+                  <span aria-hidden="true" className="text-slate-600">
+                    ·
+                  </span>
+                  <span className="text-[11px] sm:text-xs font-semibold text-rose-400">
+                    {hud.santaCount} Santas
+                  </span>
+                </>
+              )}
               <span aria-hidden="true" className="text-slate-600">
                 ·
               </span>
@@ -423,8 +438,8 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         level={hud.level}
       />
 
-      {/* Transient Event Subtitle Banner */}
-      {(hud.statusBanner || hud.chimeAngleDeg !== null) && (
+      {/* Transient Event Subtitle Banner & Revive Prompt */}
+      {(hud.statusBanner || hud.chimeAngleDeg !== null || (hud.isMultiplayer && hud.fallenTeammatesCount > 0 && hud.alive && !hud.spectating)) && (
         <div className="absolute top-28 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5 pointer-events-none max-w-md px-4 text-center">
           {hud.statusBanner && (
             <div className="bg-[#060913]/90 border border-white/15 rounded-lg px-4 py-2 text-sm text-slate-100">
@@ -437,6 +452,27 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               {hud.chimeTargetDistance !== null ? ` (${Math.round(hud.chimeTargetDistance)}m)` : ''}
             </div>
           )}
+          {hud.isMultiplayer && hud.fallenTeammatesCount > 0 && hud.alive && !hud.spectating && !hud.nearbyReviveTarget && (
+            <div className="bg-emerald-950/90 border border-emerald-400/45 rounded-lg px-3 py-1 text-xs font-medium text-emerald-200 whitespace-nowrap">
+              {hud.fallenTeammatesCount === 1
+                ? '1 downed teammate — check green + on Map to revive'
+                : `${hud.fallenTeammatesCount} downed teammates — check green + on Map to revive`}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Desktop Prominent Revive Button when near a downed teammate */}
+      {!showMobileControls && hud.nearbyReviveTarget && hud.alive && !hud.spectating && (
+        <div className="fixed bottom-28 left-1/2 -translate-x-1/2 z-20 pointer-events-auto">
+          <button
+            type="button"
+            onClick={onReviveTeammate}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-600/90 hover:bg-emerald-500 border-2 border-emerald-300 text-white text-sm font-bold shadow-xl transition-all active:scale-95 cursor-pointer"
+          >
+            <HeartPulse className="w-4 h-4 shrink-0" />
+            <span>Revive {hud.nearbyReviveTarget.displayName} (R)</span>
+          </button>
         </div>
       )}
 
@@ -453,11 +489,13 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           equippedWeapon={hud.equippedWeapon}
           nearestWeaponDistance={hud.nearestWeaponDistance}
           nextWeaponSpawnIn={hud.nextWeaponSpawnIn}
+          nearbyReviveTarget={hud.nearbyReviveTarget}
           sprinting={mobileSprinting}
           onUnlockAudio={onUnlockAudio}
           onToggleFlashlight={onToggleFlashlight}
           onTriggerChime={onTriggerChime}
           onUseWeapon={onUseWeapon}
+          onReviveTeammate={onReviveTeammate}
           onDodge={onDodge}
           onToggleMap={onToggleMapExpanded}
           onToggleChat={onToggleChat}

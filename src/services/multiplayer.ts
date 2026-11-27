@@ -704,7 +704,12 @@ export function subscribePublicRooms(
             name: String(d.name || 'North Pole Room'),
             hostId: String(d.hostId || ''),
             hostName: String(d.hostName || 'Host'),
-            difficulty: d.difficulty === 'nightmare' ? ('nightmare' as DifficultyId) : ('normal' as DifficultyId),
+            difficulty:
+              d.difficulty === 'nightmare'
+                ? ('nightmare' as DifficultyId)
+                : d.difficulty === 'insane'
+                  ? ('insane' as DifficultyId)
+                  : ('normal' as DifficultyId),
             level: Math.max(1, Math.min(99, Number(d.level || 1))),
             mazeSeed: Number(d.mazeSeed || 1),
             status: (d.status as GameRoomData['status']) || 'waiting',
@@ -794,6 +799,8 @@ export async function createMultiplayerRoom(
       equippedWeapon: '',
       shotCount: 0,
       lastShotHit: false,
+      reviveCount: 0,
+      revivedBy: '',
       updatedAt: serverTimestamp(),
     });
   } catch (error) {
@@ -808,6 +815,7 @@ export async function createMultiplayerRoom(
       speed: 0,
       alerted: false,
       stunRemaining: 0,
+      extras: [],
       updatedAt: serverTimestamp(),
     });
   } catch (error) {
@@ -864,6 +872,7 @@ export async function joinMultiplayerRoom(
     const playerRef = doc(db, 'rooms', roomId, 'players', profile.uid);
     const existingPlayer = await getDoc(playerRef);
 
+    const prevPlayer = existingPlayer.exists() ? existingPlayer.data() : null;
     await setDoc(playerRef, {
       uid: profile.uid,
       roomId,
@@ -881,6 +890,8 @@ export async function joinMultiplayerRoom(
       equippedWeapon: '',
       shotCount: 0,
       lastShotHit: false,
+      reviveCount: prevPlayer ? Number(prevPlayer.reviveCount || 0) : 0,
+      revivedBy: prevPlayer ? String(prevPlayer.revivedBy || '').slice(0, 24) : '',
       updatedAt: serverTimestamp(),
     });
 
@@ -929,31 +940,34 @@ export async function leaveMultiplayerRoom(roomId: string, uid: string): Promise
   const roomRef = doc(db, 'rooms', roomId);
   const playerRef = doc(db, 'rooms', roomId, 'players', uid);
   try {
-    await deleteDoc(playerRef);
-    const playersSnap = await getDocs(collection(db, 'rooms', roomId, 'players'));
-    const remainingPlayers = playersSnap.docs;
-    if (remainingPlayers.length === 0) {
+    const playersBeforeSnap = await getDocs(collection(db, 'rooms', roomId, 'players'));
+    const remainingBefore = playersBeforeSnap.docs.filter((d) => d.id !== uid);
+    if (remainingBefore.length === 0) {
+      // Delete parent room while our player doc still exists (passes security rule), then remove player doc
       await deleteDoc(roomRef);
-    } else {
-      const snap = await getDoc(roomRef);
-      if (snap.exists()) {
-        const d = snap.data();
-        const nextCount = remainingPlayers.length;
-        if (d.hostId === uid) {
-          const nextHostDoc = remainingPlayers[0];
-          const hd = nextHostDoc.data();
-          await updateDoc(roomRef, {
-            hostId: nextHostDoc.id,
-            hostName: sanitizeDisplayName(String(hd.displayName || 'Survivor')),
-            playerCount: nextCount,
-            updatedAt: serverTimestamp(),
-          });
-        } else {
-          await updateDoc(roomRef, {
-            playerCount: nextCount,
-            updatedAt: serverTimestamp(),
-          });
-        }
+      await deleteDoc(playerRef);
+      return;
+    }
+
+    await deleteDoc(playerRef);
+    const snap = await getDoc(roomRef);
+    if (snap.exists()) {
+      const d = snap.data();
+      const nextCount = remainingBefore.length;
+      if (d.hostId === uid) {
+        const nextHostDoc = remainingBefore[0];
+        const hd = nextHostDoc.data();
+        await updateDoc(roomRef, {
+          hostId: nextHostDoc.id,
+          hostName: sanitizeDisplayName(String(hd.displayName || 'Survivor')),
+          playerCount: nextCount,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await updateDoc(roomRef, {
+          playerCount: nextCount,
+          updatedAt: serverTimestamp(),
+        });
       }
     }
   } catch {
@@ -1017,7 +1031,7 @@ export async function collectRoomOrnament(
       if (d.status === 'finished') return;
       const current: number[] = Array.isArray(d.collectedOrnaments) ? d.collectedOrnaments.map(Number) : [];
       if (current.includes(ornamentId)) return;
-      const next = [...current, ornamentId].slice(0, 12);
+      const next = [...current, ornamentId].slice(0, 18);
       tx.update(roomRef, {
         collectedOrnaments: next,
         exitUnlocked: next.length >= ornamentsTotal,
@@ -1166,18 +1180,57 @@ export async function syncLocalPlayerState(
   }
 }
 
+export async function reviveRoomPlayer(
+  roomId: string,
+  targetUid: string,
+  reviverName: string
+): Promise<boolean> {
+  const targetRef = doc(db, 'rooms', roomId, 'players', targetUid);
+  try {
+    let revived = false;
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(targetRef);
+      if (!snap.exists()) return;
+      const d = snap.data();
+      if (d.alive !== false || Boolean(d.escaped)) return;
+      const nextCount = Math.min(1000, Number(d.reviveCount || 0) + 1);
+      tx.update(targetRef, {
+        alive: true,
+        reviveCount: nextCount,
+        revivedBy: sanitizeDisplayName(reviverName),
+        updatedAt: serverTimestamp(),
+      });
+      revived = true;
+    });
+    return revived;
+  } catch {
+    return false;
+  }
+}
+
 export async function syncHostSantaState(
   roomId: string,
   state: SantaLiveData
 ): Promise<void> {
   try {
+    const cleanExtras = Array.isArray(state.extras)
+      ? state.extras.slice(0, 2).map((e) => ({
+          x: Number(Math.max(-260, Math.min(260, e.x)).toFixed(2)),
+          z: Number(Math.max(-260, Math.min(260, e.z)).toFixed(2)),
+          yaw: Number(e.yaw.toFixed(3)),
+          speed: Number(Math.max(0, Math.min(25, e.speed)).toFixed(2)),
+          alerted: Boolean(e.alerted),
+          stunRemaining: Number(Math.max(0, Math.min(35, e.stunRemaining)).toFixed(1)),
+        }))
+      : [];
     await updateDoc(doc(db, 'rooms', roomId, 'santa', 'live'), {
-      x: Number(state.x.toFixed(2)),
-      z: Number(state.z.toFixed(2)),
+      x: Number(Math.max(-260, Math.min(260, state.x)).toFixed(2)),
+      z: Number(Math.max(-260, Math.min(260, state.z)).toFixed(2)),
       yaw: Number(state.yaw.toFixed(3)),
-      speed: Number(Math.max(0, Math.min(20, state.speed)).toFixed(2)),
+      speed: Number(Math.max(0, Math.min(25, state.speed)).toFixed(2)),
       alerted: state.alerted,
       stunRemaining: Number(Math.max(0, Math.min(35, state.stunRemaining)).toFixed(1)),
+      extras: cleanExtras,
       updatedAt: serverTimestamp(),
     });
   } catch {
@@ -1251,6 +1304,8 @@ export function subscribeRoomPlayers(
           equippedWeapon: sanitizeEquippedWeapon(d.equippedWeapon),
           shotCount: Number(d.shotCount || 0),
           lastShotHit: Boolean(d.lastShotHit),
+          reviveCount: Number(d.reviveCount || 0),
+          revivedBy: String(d.revivedBy || ''),
         };
       });
       onPlayers(list);
@@ -1269,6 +1324,15 @@ export function subscribeRoomSanta(
     (snap) => {
       if (!snap.exists()) return;
       const d = snap.data();
+      const rawExtras = Array.isArray(d.extras) ? d.extras.slice(0, 2) : [];
+      const extras = rawExtras.map((e: Record<string, unknown>) => ({
+        x: Number(e?.x || 0),
+        z: Number(e?.z || 0),
+        yaw: Number(e?.yaw || 0),
+        speed: Number(e?.speed || 0),
+        alerted: Boolean(e?.alerted),
+        stunRemaining: Number(e?.stunRemaining || 0),
+      }));
       onSanta({
         x: Number(d.x || 0),
         z: Number(d.z || 0),
@@ -1276,6 +1340,7 @@ export function subscribeRoomSanta(
         speed: Number(d.speed || 0),
         alerted: Boolean(d.alerted),
         stunRemaining: Number(d.stunRemaining || 0),
+        extras,
         updatedAtMs: Date.now(),
       });
     },

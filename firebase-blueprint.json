@@ -256,7 +256,7 @@
         },
         "difficulty": {
           "type": "string",
-          "enum": ["normal", "nightmare"]
+          "enum": ["normal", "nightmare", "insane"]
         },
         "level": {
           "type": "number"
@@ -395,6 +395,14 @@
         "lastShotHit": {
           "type": "boolean"
         },
+        "reviveCount": {
+          "type": "number"
+        },
+        "revivedBy": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 24
+        },
         "updatedAt": {
           "type": "string",
           "format": "date-time"
@@ -417,6 +425,8 @@
         "equippedWeapon",
         "shotCount",
         "lastShotHit",
+        "reviveCount",
+        "revivedBy",
         "updatedAt"
       ]
     },
@@ -443,12 +453,16 @@
         "stunRemaining": {
           "type": "number"
         },
+        "extras": {
+          "type": "array",
+          "description": "Additional active Evil Santa states for levels 50+ (up to 2 extra Santas)."
+        },
         "updatedAt": {
           "type": "string",
           "format": "date-time"
         }
       },
-      "required": ["x", "z", "yaw", "speed", "alerted", "stunRemaining", "updatedAt"]
+      "required": ["x", "z", "yaw", "speed", "alerted", "stunRemaining", "extras", "updatedAt"]
     },
     "RoomChatMessage": {
       "title": "RoomChatMessage",

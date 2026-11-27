@@ -470,40 +470,96 @@ export const MenuOverlays: React.FC<MenuOverlaysProps> = ({
                 </div>
               </div>
 
-              {/* Level Selector */}
+              {/* Unrestricted Level Selector (1-99) */}
               <div className="mb-4">
                 <div className="flex items-center justify-between text-xs font-medium text-slate-400 mb-1.5">
-                  <span>Maze Level (Harder at Higher Lv)</span>
+                  <span>Pick Any Level (1–99)</span>
                   <span className="text-slate-300">{levelScaling.label}</span>
                 </div>
-                <div className="flex items-center justify-between gap-2 bg-[#050811] border border-white/10 rounded-lg p-1.5">
-                  <button
-                    type="button"
-                    disabled={selectedLevel <= 1}
-                    onClick={() => onSelectLevel(Math.max(1, selectedLevel - 1))}
-                    aria-label="Previous level"
-                    className="w-8 h-8 flex items-center justify-center rounded-md bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-slate-200 cursor-pointer"
-                  >
-                    <ChevronLeft className="w-4 h-4" />
-                  </button>
-                  <div className="text-center">
-                    <div className="text-sm font-semibold text-slate-100">
-                      Level {selectedLevel} / {maxUnlockedLevel}
+                <div className="bg-[#050811] border border-white/10 rounded-lg p-2.5 flex flex-col gap-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      disabled={selectedLevel <= 1}
+                      onClick={() => onSelectLevel(Math.max(1, selectedLevel - 1))}
+                      aria-label="Previous level"
+                      className="w-8 h-8 flex items-center justify-center rounded-md bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-slate-200 cursor-pointer shrink-0"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                    </button>
+                    <div className="text-center flex-1 min-w-0">
+                      <div className="flex items-center justify-center gap-1.5 text-sm font-semibold text-slate-100">
+                        <span>Level</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={99}
+                          value={selectedLevel}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value, 10);
+                            if (!Number.isNaN(val)) {
+                              onSelectLevel(val);
+                            }
+                          }}
+                          aria-label="Enter level number 1 to 99"
+                          className="w-12 bg-[#0b1120] border border-white/15 rounded px-1.5 py-0.5 text-center text-sm font-mono-tabular text-slate-100 focus:outline-none focus:border-red-500"
+                        />
+                        <span className="text-slate-400">/ 99</span>
+                      </div>
+                      <div className="text-[11px] text-slate-400 mt-0.5 truncate">
+                        {levelScaling.mazeSize}×{levelScaling.mazeSize} ·{' '}
+                        <span className={levelScaling.santaCount > 1 ? 'text-rose-400 font-semibold' : ''}>
+                          {levelScaling.santaCount} {levelScaling.santaCount === 1 ? 'Santa' : 'Santas'}
+                        </span>{' '}
+                        · {levelScaling.ornamentCount} Stars · {levelScaling.santaChaseSpeed} m/s
+                      </div>
                     </div>
-                    <div className="text-[11px] text-slate-400">
-                      {levelScaling.mazeSize}×{levelScaling.mazeSize} · {levelScaling.ornamentCount} Stars ·{' '}
-                      {levelScaling.batteryCount} Batteries · Santa {levelScaling.santaChaseSpeed} m/s
-                    </div>
+                    <button
+                      type="button"
+                      disabled={selectedLevel >= 99}
+                      onClick={() => onSelectLevel(Math.min(99, selectedLevel + 1))}
+                      aria-label="Next level"
+                      className="w-8 h-8 flex items-center justify-center rounded-md bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-slate-200 cursor-pointer shrink-0"
+                    >
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    disabled={selectedLevel >= maxUnlockedLevel}
-                    onClick={() => onSelectLevel(Math.min(maxUnlockedLevel, selectedLevel + 1))}
-                    aria-label="Next level"
-                    className="w-8 h-8 flex items-center justify-center rounded-md bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-slate-200 cursor-pointer"
-                  >
-                    <ChevronRight className="w-4 h-4" />
-                  </button>
+
+                  <input
+                    type="range"
+                    min={1}
+                    max={99}
+                    value={selectedLevel}
+                    onChange={(e) => onSelectLevel(Number(e.target.value))}
+                    aria-label="Select maze level 1 to 99"
+                    className="w-full accent-red-600 cursor-pointer"
+                  />
+
+                  <div className="grid grid-cols-5 gap-1">
+                    {[
+                      { lvl: 1, label: 'Lv 1' },
+                      { lvl: 25, label: 'Lv 25' },
+                      { lvl: 50, label: 'Lv 50 · 2x' },
+                      { lvl: 75, label: 'Lv 75 · 2x' },
+                      { lvl: 99, label: 'Lv 99 · 3x' },
+                    ].map((preset) => {
+                      const active = selectedLevel === preset.lvl;
+                      return (
+                        <button
+                          key={preset.lvl}
+                          type="button"
+                          onClick={() => onSelectLevel(preset.lvl)}
+                          className={`px-1 py-1 rounded text-[10px] font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                            active
+                              ? 'bg-red-700 text-white'
+                              : 'bg-slate-900/90 text-slate-300 hover:bg-slate-800 hover:text-white'
+                          }`}
+                        >
+                          {preset.label}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
 
@@ -1325,6 +1381,7 @@ export const MenuOverlays: React.FC<MenuOverlaysProps> = ({
               <p className="text-xs text-slate-400 mt-1">
                 Level {activeRoom.level} ·{' '}
                 <span className="capitalize text-slate-200">{activeRoom.difficulty}</span> ·{' '}
+                {roomScaling.santaCount} {roomScaling.santaCount === 1 ? 'Santa' : 'Santas'} ·{' '}
                 {activeRoom.ornamentsTotal} Ornaments · {roomScaling.mazeSize}×{roomScaling.mazeSize} Labyrinth
               </p>
             </div>

@@ -9,6 +9,49 @@ interface MazeMapProps {
   level: number;
 }
 
+const wallCache = new Map<string, HTMLCanvasElement>();
+
+function getCachedMazeWallsCanvas(
+  mapState: MazeMapState,
+  pxSize: number,
+  dpr: number
+): HTMLCanvasElement {
+  const key = `${mapState.mazeSeed}:${mapState.size}:${pxSize}:${dpr}`;
+  const cached = wallCache.get(key);
+  if (cached) return cached;
+
+  if (wallCache.size > 6) {
+    wallCache.clear();
+  }
+
+  const off = document.createElement('canvas');
+  off.width = pxSize * dpr;
+  off.height = pxSize * dpr;
+  const octx = off.getContext('2d')!;
+  octx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const n = mapState.size;
+  const cellPx = pxSize / n;
+
+  // Floor background
+  octx.fillStyle = '#060a14';
+  octx.fillRect(0, 0, pxSize, pxSize);
+
+  // Hedge walls
+  octx.fillStyle = '#1b283f';
+  for (let r = 0; r < n; r++) {
+    const row = mapState.grid[r];
+    for (let c = 0; c < n; c++) {
+      if (row[c] === 1) {
+        octx.fillRect(c * cellPx, r * cellPx, Math.ceil(cellPx), Math.ceil(cellPx));
+      }
+    }
+  }
+
+  wallCache.set(key, off);
+  return off;
+}
+
 function drawMazeToCanvas(
   canvas: HTMLCanvasElement,
   mapState: MazeMapState,
@@ -23,25 +66,14 @@ function drawMazeToCanvas(
     canvas.width = pxSize * dpr;
     canvas.height = pxSize * dpr;
   }
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
   const n = mapState.size;
   const cellPx = pxSize / n;
 
-  // Floor background
-  ctx.fillStyle = '#060a14';
-  ctx.fillRect(0, 0, pxSize, pxSize);
-
-  // Hedge walls
-  ctx.fillStyle = '#1b283f';
-  for (let r = 0; r < n; r++) {
-    const row = mapState.grid[r];
-    for (let c = 0; c < n; c++) {
-      if (row[c] === 1) {
-        ctx.fillRect(c * cellPx, r * cellPx, Math.ceil(cellPx), Math.ceil(cellPx));
-      }
-    }
-  }
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  const bgCanvas = getCachedMazeWallsCanvas(mapState, pxSize, dpr);
+  ctx.drawImage(bgCanvas, 0, 0);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
   // Exit Gate
   const ex = mapState.exitNormX * pxSize;
@@ -92,22 +124,26 @@ function drawMazeToCanvas(
     const pR = Math.max(3.5, cellPx * 0.46);
 
     if (!p.alive && !p.escaped) {
-      // Caught teammate marker (muted red X)
-      ctx.strokeStyle = '#ef4444';
-      ctx.lineWidth = 1.6;
-      const xr = Math.max(3, pR * 0.85);
+      // Downed teammate rescue marker (pulsing emerald ring + medical cross)
+      ctx.fillStyle = 'rgba(16, 185, 129, 0.25)';
       ctx.beginPath();
-      ctx.moveTo(px - xr, py - xr);
-      ctx.lineTo(px + xr, py + xr);
-      ctx.moveTo(px + xr, py - xr);
-      ctx.lineTo(px - xr, py + xr);
+      ctx.arc(px, py, pR + 2.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#34d399';
+      ctx.lineWidth = 1.8;
+      const cr = Math.max(3, pR * 0.9);
+      ctx.beginPath();
+      ctx.moveTo(px - cr, py);
+      ctx.lineTo(px + cr, py);
+      ctx.moveTo(px, py - cr);
+      ctx.lineTo(px, py + cr);
       ctx.stroke();
 
       if (detailed) {
-        ctx.font = '600 9px sans-serif';
-        ctx.fillStyle = '#fca5a5';
+        ctx.font = '700 9px sans-serif';
+        ctx.fillStyle = '#6ee7b7';
         ctx.textAlign = 'center';
-        ctx.fillText(`${p.displayName.slice(0, 8)} (CAUGHT)`, px, py - pR - 4);
+        ctx.fillText(`${p.displayName.slice(0, 8)} [REVIVE]`, px, py - pR - 4);
       }
       continue;
     }
@@ -141,24 +177,48 @@ function drawMazeToCanvas(
     }
   }
 
-  // Evil Santa Marker
-  const sx = mapState.santaNormX * pxSize;
-  const sy = mapState.santaNormZ * pxSize;
+  // Evil Santa Markers (1-3 Santas depending on level)
+  const santaList =
+    mapState.santas && mapState.santas.length > 0
+      ? mapState.santas
+      : [
+          {
+            normX: mapState.santaNormX,
+            normZ: mapState.santaNormZ,
+            alerted: mapState.santaAlerted,
+            stunRemaining: mapState.santaStunRemaining,
+          },
+        ];
+
   const sR = Math.max(4.5, cellPx * 0.62);
-  ctx.fillStyle = mapState.santaStunRemaining > 0 ? '#38bdf8' : '#ef4444';
-  ctx.beginPath();
-  ctx.arc(sx, sy, sR, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = '#fef2f2';
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
+  santaList.forEach((s, idx) => {
+    const sx = s.normX * pxSize;
+    const sy = s.normZ * pxSize;
+    ctx.fillStyle = s.stunRemaining > 0 ? '#38bdf8' : '#ef4444';
+    ctx.beginPath();
+    ctx.arc(sx, sy, sR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#fef2f2';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    if (detailed) {
+      ctx.font = '700 10px sans-serif';
+      ctx.fillStyle = s.stunRemaining > 0 ? '#7dd3fc' : '#fca5a5';
+      ctx.textAlign = 'center';
+      const label =
+        s.stunRemaining > 0
+          ? 'STUN'
+          : santaList.length > 1
+            ? `SANTA ${idx + 1}`
+            : 'SANTA';
+      ctx.fillText(label, sx, sy - sR - 4);
+    }
+  });
 
   if (detailed) {
     ctx.font = '700 10px sans-serif';
-    ctx.fillStyle = mapState.santaStunRemaining > 0 ? '#7dd3fc' : '#fca5a5';
     ctx.textAlign = 'center';
-    ctx.fillText(mapState.santaStunRemaining > 0 ? 'STUN' : 'SANTA', sx, sy - sR - 4);
-
     ctx.fillStyle = mapState.exitUnlocked ? '#6ee7b7' : '#fda4af';
     ctx.fillText('EXIT', ex - 10, ey - exitBox / 2 - 4);
   }

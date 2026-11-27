@@ -35,6 +35,7 @@ import {
   registerSurvivorWithEmail,
   removeOrDeclineFriend,
   resetSurvivorPassword,
+  reviveRoomPlayer,
   sendFriendRequestByCode,
   sendFriendRequestByUid,
   sendGlobalChatMessage,
@@ -85,6 +86,7 @@ const INITIAL_HUD: HudSnapshot = {
   phase: 'menu',
   difficulty: 'normal',
   level: 1,
+  santaCount: 1,
   ornamentsCollected: 0,
   ornamentsTotal: 5,
   exitUnlocked: false,
@@ -123,6 +125,8 @@ const INITIAL_HUD: HudSnapshot = {
   alive: true,
   spectating: false,
   chatOpen: false,
+  nearbyReviveTarget: null,
+  fallenTeammatesCount: 0,
   mapState: null,
 };
 
@@ -131,6 +135,7 @@ export default function App() {
   const engineRef = useRef<MazeEngine | null>(null);
   const startedRoomKeyRef = useRef<string | null>(null);
   const outcomeRecordedRef = useRef<boolean>(false);
+  const lastPlayersMetaKeyRef = useRef<string>('');
 
   const [hud, setHud] = useState<HudSnapshot>(INITIAL_HUD);
   const [selectedDifficulty, setSelectedDifficulty] = useState<DifficultyId>('normal');
@@ -324,6 +329,9 @@ export default function App() {
               onTriggerSantaStun: () => {
                 triggerRoomSantaStun(room.roomId);
               },
+              onReviveTeammate: (targetUid) => {
+                void reviveRoomPlayer(room.roomId, targetUid, profile.displayName);
+              },
             },
           });
         }
@@ -341,8 +349,17 @@ export default function App() {
     });
 
     const unsubPlayers = subscribeRoomPlayers(activeRoomId, (players) => {
-      setRoomPlayers(players);
       engineRef.current?.applyRemotePlayers(players);
+      const metaKey = players
+        .map(
+          (p) =>
+            `${p.uid}|${p.displayName}|${p.coatColor}|${p.scarfColor}|${p.hatStyle}|${p.alive}|${p.escaped}|${p.reviveCount || 0}`
+        )
+        .join(';');
+      if (metaKey !== lastPlayersMetaKeyRef.current) {
+        lastPlayersMetaKeyRef.current = metaKey;
+        setRoomPlayers(players);
+      }
     });
 
     const unsubSanta = subscribeRoomSanta(activeRoomId, (santa) => {
@@ -352,6 +369,7 @@ export default function App() {
     const unsubChat = subscribeRoomChat(activeRoomId, setRoomChat);
 
     return () => {
+      lastPlayersMetaKeyRef.current = '';
       unsubRoom();
       unsubPlayers();
       unsubSanta();
@@ -365,8 +383,9 @@ export default function App() {
       outcomeRecordedRef.current = true;
       setMapExpanded(false);
       const escaped = hud.phase === 'escaped';
+      const diffBonus = hud.difficulty === 'insane' ? 95 : hud.difficulty === 'nightmare' ? 45 : 0;
       const earnedXp = escaped
-        ? Math.max(xpForNextLevel(hud.level), 110 + hud.level * 65 + (hud.difficulty === 'nightmare' ? 45 : 0))
+        ? Math.max(xpForNextLevel(hud.level), 110 + hud.level * 65 + diffBonus)
         : 15 + hud.ornamentsCollected * 15;
 
       // Always update local progression too
@@ -465,7 +484,7 @@ export default function App() {
   };
 
   const handleSelectLevel = (level: number) => {
-    const clamped = Math.max(1, Math.min(maxUnlockedLevel, level));
+    const clamped = Math.max(1, Math.min(99, Math.floor(level || 1)));
     setSelectedLevel(clamped);
     engineRef.current?.setSelectedLevel(clamped);
   };
@@ -673,6 +692,7 @@ export default function App() {
         onToggleFlashlight={() => engineRef.current?.toggleFlashlight()}
         onTriggerChime={() => engineRef.current?.triggerChimeSense()}
         onUseWeapon={() => engineRef.current?.useEquippedWeapon()}
+        onReviveTeammate={() => engineRef.current?.reviveNearbyTeammate()}
         onDodge={() => engineRef.current?.triggerDodge()}
         onToggleHudHidden={() => engineRef.current?.toggleHudHidden()}
         onLockPointer={() => engineRef.current?.requestPointerLockSafe()}

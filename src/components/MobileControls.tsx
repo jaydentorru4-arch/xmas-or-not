@@ -3,6 +3,7 @@ import {
   Bell,
   Crosshair,
   Flashlight,
+  HeartPulse,
   Map as MapIcon,
   MessageSquare,
   Wind,
@@ -20,11 +21,13 @@ interface MobileControlsProps {
   equippedWeapon: WeaponType | null;
   nearestWeaponDistance: number | null;
   nextWeaponSpawnIn: number;
+  nearbyReviveTarget: { uid: string; displayName: string; distance: number } | null;
   sprinting: boolean;
   onUnlockAudio: () => void;
   onToggleFlashlight: () => void;
   onTriggerChime: () => void;
   onUseWeapon: () => void;
+  onReviveTeammate: () => void;
   onDodge: () => void;
   onToggleMap: () => void;
   onToggleChat: () => void;
@@ -44,11 +47,13 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
   equippedWeapon,
   nearestWeaponDistance,
   nextWeaponSpawnIn,
+  nearbyReviveTarget,
   sprinting,
   onUnlockAudio,
   onToggleFlashlight,
   onTriggerChime,
   onUseWeapon,
+  onReviveTeammate,
   onDodge,
   onToggleMap,
   onToggleChat,
@@ -284,6 +289,17 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
         className="absolute right-4 sm:right-6 z-20 pointer-events-auto flex flex-col items-end gap-2 touch-none"
         style={{ bottom: 'max(1rem, env(safe-area-inset-bottom))' }}
       >
+        {nearbyReviveTarget && alive && !spectating && (
+          <button
+            type="button"
+            onPointerDown={triggerAction(onReviveTeammate)}
+            className="px-4 py-2.5 rounded-xl bg-emerald-600/90 border-2 border-emerald-300 text-white text-xs font-bold flex items-center gap-2 shadow-lg active:scale-95 touch-none cursor-pointer"
+          >
+            <HeartPulse className="w-4 h-4 shrink-0" />
+            <span>Revive {nearbyReviveTarget.displayName}</span>
+          </button>
+        )}
+
         {equippedWeapon && alive && !spectating && (
           <button
             type="button"
