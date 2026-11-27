@@ -244,6 +244,20 @@ export default function App() {
     };
   }, [user, profile, activeRoomId]);
 
+  // Ensure leaveMultiplayerRoom runs on window unload or page close
+  useEffect(() => {
+    if (!activeRoomId || !profile) return;
+    const handleUnload = () => {
+      void leaveMultiplayerRoom(activeRoomId, profile.uid);
+    };
+    window.addEventListener('beforeunload', handleUnload);
+    window.addEventListener('pagehide', handleUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleUnload);
+      window.removeEventListener('pagehide', handleUnload);
+    };
+  }, [activeRoomId, profile]);
+
   // Subscribe to Active Room state, players, Santa, and room chat
   useEffect(() => {
     if (!activeRoomId || !profile) return;

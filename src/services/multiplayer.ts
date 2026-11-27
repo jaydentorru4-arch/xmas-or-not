@@ -706,7 +706,7 @@ export function subscribePublicRooms(
             updatedAtMs: d.updatedAt?.toMillis ? d.updatedAt.toMillis() : 0,
           };
         })
-        .filter((r) => r.status !== 'finished' && r.playerCount > 0);
+        .filter((r) => r.status !== 'finished' && r.playerCount > 0 && (Date.now() - (r.updatedAtMs || 0) < 180000));
       list.sort((a, b) => (b.updatedAtMs || 0) - (a.updatedAtMs || 0));
       onRooms(list);
     },
@@ -981,12 +981,9 @@ export async function startMultiplayerRoom(roomId: string): Promise<void> {
 
 export async function finishMultiplayerRoom(roomId: string): Promise<void> {
   try {
-    await updateDoc(doc(db, 'rooms', roomId), {
-      status: 'finished',
-      updatedAt: serverTimestamp(),
-    });
+    await deleteDoc(doc(db, 'rooms', roomId));
   } catch {
-    // ignore if already finished
+    // ignore if already deleted
   }
 }
 
