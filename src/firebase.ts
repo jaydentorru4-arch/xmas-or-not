@@ -73,14 +73,14 @@ export function handleFirestoreError(
   console.warn('Firestore Quota / Limit Notice: ', JSON.stringify(errInfo));
 }
 
-async function testConnection(): Promise<void> {
+export async function testAiSharedConnection(): Promise<boolean> {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
+    return true;
   } catch (error) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
       console.error('Please check your Firebase configuration.');
     }
+    return false;
   }
 }
-
-void testConnection();

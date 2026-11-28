@@ -375,7 +375,7 @@ export function hasLineOfSight(
   const dz = bz - az;
   const dist = Math.hypot(dx, dz);
   if (dist < 0.05) return true;
-  const steps = Math.ceil(dist / 0.35);
+  const steps = Math.max(2, Math.ceil(dist / 0.22));
   const size = grid.length;
   for (let i = 1; i < steps; i++) {
     const t = i / steps;

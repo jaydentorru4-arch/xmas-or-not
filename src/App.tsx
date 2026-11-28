@@ -5,6 +5,14 @@ import { InGameChat } from './components/InGameChat';
 import { MenuOverlays } from './components/MenuOverlays';
 import { auth } from './firebase';
 import { MazeEngine } from './game/MazeEngine';
+import {
+  checkServerIsAdmin,
+  DbApiError,
+  ensureActiveDatabaseLoaded,
+  getCachedActiveDatabase,
+  subscribeActiveDatabase,
+  type DatabaseId,
+} from './services/databaseAdmin';
 import { useDeviceDetection } from './utils/deviceDetection';
 import {
   applyXpGain,
@@ -164,6 +172,11 @@ export default function App() {
   const profileRef = useRef<SurvivorProfile | null>(null);
   profileRef.current = profile;
 
+  // Dual-Database Active Target & Verified Admin Access
+  const [activeDatabase, setActiveDatabase] = useState<DatabaseId>(() => getCachedActiveDatabase());
+  const [isAdmin, setIsAdmin] = useState(false);
+  const prevActiveDbRef = useRef<DatabaseId>(activeDatabase);
+
   // Friends State
   const [friends, setFriends] = useState<FriendRecord[]>([]);
   const [friendError, setFriendError] = useState<string | null>(null);
@@ -208,37 +221,100 @@ export default function App() {
     }
   }, [hud.phase]);
 
-  // Listen to Firebase Auth state and load survivor profile
+  // Sync Active Database setting from backend (Default vs AI Shared)
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (nextUser) => {
+    let mounted = true;
+    void ensureActiveDatabaseLoaded().then((dbId) => {
+      if (mounted) setActiveDatabase(dbId);
+    });
+    const unsubDb = subscribeActiveDatabase((dbId) => {
+      setActiveDatabase(dbId);
+    });
+    return () => {
+      mounted = false;
+      unsubDb();
+    };
+  }, []);
+
+  // Listen to Firebase Auth state (single Auth project keeps sessions across DB switches)
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (nextUser) => {
       setUser(nextUser);
       if (!nextUser) {
+        setIsAdmin(false);
         setProfile(null);
         setFriends([]);
-        setAuthLoading(false);
-        return;
-      }
-      setAuthLoading(true);
-      setAuthError(null);
-      try {
-        const loaded = await loadOrCreateSurvivorProfile(nextUser);
-        setProfile(loaded);
-        setSelectedLevel((prev) => Math.max(prev, loaded.level));
-      } catch (err) {
-        setAuthError(err instanceof Error ? err.message : 'Unable to load survivor profile.');
-      } finally {
         setAuthLoading(false);
       }
     });
     return () => unsub();
   }, []);
 
+  // Load survivor profile & admin eligibility whenever user or activeDatabase changes
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+
+    if (prevActiveDbRef.current !== activeDatabase) {
+      prevActiveDbRef.current = activeDatabase;
+      // Cleanly close any open match room tied to the previous database without logging out
+      if (activeRoomId) {
+        startedRoomKeyRef.current = null;
+        setActiveRoomId(null);
+        setActiveRoom(null);
+        setRoomPlayers([]);
+        setRoomChat([]);
+        engineRef.current?.returnToMenu();
+      }
+      setFriends([]);
+      setPublicRooms([]);
+      setGlobalChat([]);
+    }
+
+    setAuthLoading(true);
+    setAuthError(null);
+
+    void (async () => {
+      await ensureActiveDatabaseLoaded();
+      const adminFlag = await checkServerIsAdmin();
+      if (!cancelled) {
+        setIsAdmin(adminFlag);
+      }
+      try {
+        const loaded = await loadOrCreateSurvivorProfile(user);
+        if (!cancelled) {
+          setProfile(loaded);
+          setSelectedLevel((prev) => Math.max(prev, loaded.level));
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setProfile(null);
+          if (err instanceof DbApiError && err.code === 'DEFAULT_DB_SETUP_REQUIRED') {
+            setAuthError(
+              'Default Database (holloweve-1d459) requires server IAM Firestore access. Open Admin -> Database Management for setup details or switch active database.'
+            );
+          } else {
+            setAuthError(err instanceof Error ? err.message : 'Unable to load survivor profile.');
+          }
+        }
+      } finally {
+        if (!cancelled) {
+          setAuthLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user, activeDatabase]);
+
   // Subscribe to Friends when signed in
   useEffect(() => {
     if (!user || !profile) return;
     const unsubFriends = subscribeFriends(profile.uid, setFriends);
     return () => unsubFriends();
-  }, [user, profile?.uid]);
+  }, [user, profile?.uid, activeDatabase]);
 
   // Subscribe to Global Chat & Open Public Rooms when signed in and in Menu
   useEffect(() => {
@@ -249,7 +325,7 @@ export default function App() {
       unsubChat();
       unsubRooms();
     };
-  }, [user?.uid, profile?.uid, activeRoomId]);
+  }, [user?.uid, profile?.uid, activeRoomId, activeDatabase]);
 
   // Ensure leaveMultiplayerRoom runs on window unload or page close
   useEffect(() => {
@@ -382,7 +458,7 @@ export default function App() {
       unsubSanta();
       unsubChat();
     };
-  }, [activeRoomId, profile?.uid]);
+  }, [activeRoomId, profile?.uid, activeDatabase]);
 
   // Record match outcome & grant XP/Level progression once per finished match
   useEffect(() => {
@@ -768,6 +844,10 @@ export default function App() {
         onSendGlobalChat={handleSendGlobalChat}
         onSendRoomChat={handleSendRoomChat}
         onClearGlobalChat={() => clearGlobalChat()}
+        isAdmin={isAdmin}
+        isSignedIn={Boolean(user)}
+        activeDatabase={activeDatabase}
+        onDatabaseSwitched={(dbId) => setActiveDatabase(dbId)}
       />
     </main>
   );

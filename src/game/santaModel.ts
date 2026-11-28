@@ -268,18 +268,18 @@ export function createEvilSanta(
 
   const updateAnimation = (time: number, speed: number, alerted: boolean, stunRemaining = 0) => {
     if (stunRemaining > 0) {
-      // Granny-style knocked-out slump pose with dizzy orbiting stars
+      // Granny-style knocked-out slump pose with dizzy orbiting stars (kept above snow plane)
       stunStarsGroup.visible = true;
       stunStarsGroup.rotation.y = time * 3.6;
 
-      bodyPivot.position.y = -0.82;
-      bodyPivot.rotation.x = 0.92;
-      bodyPivot.rotation.z = 0.14;
-      leftLeg.rotation.x = -0.75;
-      rightLeg.rotation.x = -0.45;
+      bodyPivot.position.y = -0.32;
+      bodyPivot.rotation.x = 1.08;
+      bodyPivot.rotation.z = 0.12;
+      leftLeg.rotation.x = -0.85;
+      rightLeg.rotation.x = -0.55;
       leftArm.rotation.x = -0.55;
       rightArm.rotation.x = -0.35;
-      headGroup.rotation.x = 0.42 + Math.sin(time * 2.2) * 0.08;
+      headGroup.rotation.x = 0.36 + Math.sin(time * 2.2) * 0.08;
       headGroup.rotation.z = Math.sin(time * 1.9) * 0.22;
 
       const wakingSoon = stunRemaining < 4.0;
@@ -315,6 +315,7 @@ export function createEvilSanta(
       bodyPivot.position.y = Math.sin(time * 2.2) * 0.03;
       bodyPivot.rotation.z = 0;
       headGroup.rotation.z = Math.sin(time * 1.1) * 0.08;
+      headGroup.rotation.x = 0.04;
     }
 
     const pulse = alerted

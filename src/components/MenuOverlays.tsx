@@ -23,6 +23,8 @@ import {
   X,
 } from 'lucide-react';
 import type { ControlScheme } from '../utils/deviceDetection';
+import type { DatabaseId } from '../services/databaseAdmin';
+import { AdminDatabaseModal } from './AdminDatabaseModal';
 import {
   COAT_COLORS,
   ChatMessageData,
@@ -97,6 +99,12 @@ interface MenuOverlaysProps {
   onSendGlobalChat: (text: string) => Promise<void>;
   onSendRoomChat: (text: string) => Promise<void>;
   onClearGlobalChat: () => Promise<void>;
+
+  // Admin Database Management (verified admin email only)
+  isAdmin: boolean;
+  isSignedIn: boolean;
+  activeDatabase: DatabaseId;
+  onDatabaseSwitched?: (dbId: DatabaseId) => void;
 }
 
 type RightTab = 'coop' | 'customize' | 'friends';
@@ -231,8 +239,13 @@ export const MenuOverlays: React.FC<MenuOverlaysProps> = ({
   onSendGlobalChat,
   onSendRoomChat,
   onClearGlobalChat,
+  isAdmin,
+  isSignedIn,
+  activeDatabase,
+  onDatabaseSwitched,
 }) => {
   const [rightTab, setRightTab] = useState<RightTab>('coop');
+  const [adminModalOpen, setAdminModalOpen] = useState(false);
 
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
   const [authName, setAuthName] = useState('');
@@ -692,15 +705,30 @@ export const MenuOverlays: React.FC<MenuOverlaysProps> = ({
                     : 'Sign in to unlock multiplayer rooms, survivor customization, friends, and cloud XP.'}
                 </p>
               </div>
-              {profile && (
-                <button
-                  type="button"
-                  onClick={onSignOut}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-300 bg-slate-900 border border-white/12 rounded-lg hover:text-white hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  <LogOut className="w-3.5 h-3.5" />
-                  <span>Sign Out</span>
-                </button>
+              {(profile || (isSignedIn && isAdmin)) && (
+                <div className="flex items-center gap-2 shrink-0">
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => setAdminModalOpen(true)}
+                      title={`Database Management (${activeDatabase === 'default' ? 'Default DB' : 'AI Shared DB'})`}
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-amber-300 bg-slate-900 border border-amber-400/25 rounded-lg hover:text-amber-200 hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      <Shield className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Admin</span>
+                    </button>
+                  )}
+                  {(profile || isSignedIn) && (
+                    <button
+                      type="button"
+                      onClick={onSignOut}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-300 bg-slate-900 border border-white/12 rounded-lg hover:text-white hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      <LogOut className="w-3.5 h-3.5" />
+                      <span>Sign Out</span>
+                    </button>
+                  )}
+                </div>
               )}
             </div>
 
@@ -1374,6 +1402,13 @@ export const MenuOverlays: React.FC<MenuOverlaysProps> = ({
             )}
           </div>
         </div>
+        {isAdmin && (
+          <AdminDatabaseModal
+            open={adminModalOpen}
+            onClose={() => setAdminModalOpen(false)}
+            onSwitched={onDatabaseSwitched}
+          />
+        )}
       </div>
     );
   }

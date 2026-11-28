@@ -30,7 +30,14 @@ import {
   handleFirestoreError,
   OperationType,
 } from '../firebase';
-import { CELL_SIZE, cellToWorld } from '../game/maze';
+import {
+  authedApiFetch,
+  DbApiError,
+  ensureActiveDatabaseLoaded,
+  getCachedActiveDatabase,
+  trackAiSharedClientOp,
+} from './databaseAdmin';
+import { CELL_SIZE, cellToWorld, generateMaze } from '../game/maze';
 import {
   applyXpGain,
   ChatMessageData,
@@ -48,6 +55,10 @@ import {
   SurvivorProfile,
   WeaponType,
 } from '../game/types';
+
+function useDefaultProxy(): boolean {
+  return getCachedActiveDatabase() === 'default';
+}
 
 function sanitizeEquippedWeapon(raw: unknown): WeaponType | '' {
   if (raw === 'tranq_dart' || raw === 'cryo_blaster' || raw === 'candy_bat') return raw;
@@ -109,12 +120,14 @@ async function ensureFriendCodeLookup(uid: string, friendCode: string): Promise<
   try {
     const codeRef = doc(db, 'friendCodes', friendCode);
     const snap = await getDoc(codeRef);
+    trackAiSharedClientOp({ reads: 1 });
     if (!snap.exists()) {
       await setDoc(codeRef, {
         uid,
         friendCode,
         createdAt: serverTimestamp(),
       });
+      trackAiSharedClientOp({ writes: 1 });
     }
   } catch {
     // Non-fatal if already registered or offline
@@ -122,6 +135,21 @@ async function ensureFriendCodeLookup(uid: string, friendCode: string): Promise<
 }
 
 let pendingRegistrationName: string | null = null;
+const friendsRefreshListeners = new Set<() => void>();
+const globalChatRefreshListeners = new Set<() => void>();
+const publicRoomsRefreshListeners = new Set<() => void>();
+
+function triggerFriendsRefresh(): void {
+  for (const fn of friendsRefreshListeners) fn();
+}
+
+function triggerGlobalChatRefresh(): void {
+  for (const fn of globalChatRefreshListeners) fn();
+}
+
+function triggerPublicRoomsRefresh(): void {
+  for (const fn of publicRoomsRefreshListeners) fn();
+}
 
 function mapFirebaseAuthError(error: unknown, fallback: string): Error {
   const code =
@@ -132,7 +160,7 @@ function mapFirebaseAuthError(error: unknown, fallback: string): Error {
   switch (code) {
     case 'auth/operation-not-allowed':
       return new Error(
-        'Email/Password sign-in is not enabled in Firebase Console yet. Enable the Email/Password provider in Authentication → Sign-in method, or sign in with Google.'
+        'Email/Password sign-in is not enabled in Firebase Console yet. Enable the Email/Password provider in Authentication -> Sign-in method, or sign in with Google.'
       );
     case 'auth/email-already-in-use':
       return new Error('An account with this email already exists. Switch to Sign In instead.');
@@ -154,6 +182,128 @@ function mapFirebaseAuthError(error: unknown, fallback: string): Error {
       return new Error('Network error. Check your connection and try again.');
     default:
       return error instanceof Error ? error : new Error(fallback);
+  }
+}
+
+// Shared SSE + Snapshot Hub for Default Database rooms
+interface DefaultRoomStreamHub {
+  roomCbs: Set<(room: GameRoomData | null) => void>;
+  playerCbs: Set<(players: RoomPlayerData[]) => void>;
+  santaCbs: Set<(santa: SantaLiveData) => void>;
+  msgCbs: Set<(msgs: ChatMessageData[]) => void>;
+  abort: AbortController;
+  pollId: number | null;
+}
+
+const roomStreamHubs = new Map<string, DefaultRoomStreamHub>();
+
+function getOrStartRoomHub(roomId: string): DefaultRoomStreamHub {
+  const existing = roomStreamHubs.get(roomId);
+  if (existing) return existing;
+
+  const abort = new AbortController();
+  const hub: DefaultRoomStreamHub = {
+    roomCbs: new Set(),
+    playerCbs: new Set(),
+    santaCbs: new Set(),
+    msgCbs: new Set(),
+    abort,
+    pollId: null,
+  };
+  roomStreamHubs.set(roomId, hub);
+
+  const emitEvent = (eventType: string, rawData: string) => {
+    try {
+      const parsed = JSON.parse(rawData);
+      if (eventType === 'room') {
+        for (const cb of hub.roomCbs) cb(parsed as GameRoomData | null);
+      } else if (eventType === 'players') {
+        for (const cb of hub.playerCbs) cb(parsed as RoomPlayerData[]);
+      } else if (eventType === 'santa' && parsed) {
+        for (const cb of hub.santaCbs) cb(parsed as SantaLiveData);
+      } else if (eventType === 'messages') {
+        for (const cb of hub.msgCbs) cb(parsed as ChatMessageData[]);
+      }
+    } catch {
+      // ignore malformed chunk
+    }
+  };
+
+  const fetchSnapshotFallback = async () => {
+    try {
+      const snap = await authedApiFetch<{
+        room: GameRoomData | null;
+        players: RoomPlayerData[];
+        santa: SantaLiveData | null;
+        messages: ChatMessageData[];
+      }>(`/api/db/rooms/${encodeURIComponent(roomId)}/snapshot`);
+      for (const cb of hub.roomCbs) cb(snap.room);
+      for (const cb of hub.playerCbs) cb(snap.players);
+      if (snap.santa) for (const cb of hub.santaCbs) cb(snap.santa);
+      for (const cb of hub.msgCbs) cb(snap.messages);
+    } catch {
+      // ignore transient poll error
+    }
+  };
+
+  const startSse = async () => {
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      if (!token || abort.signal.aborted) return;
+
+      const resp = await fetch(`/api/db/rooms/${encodeURIComponent(roomId)}/stream`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: abort.signal,
+      });
+      if (!resp.ok || !resp.body) throw new Error('Stream unavailable');
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (!abort.signal.aborted) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split('\n\n');
+        buffer = blocks.pop() || '';
+        for (const block of blocks) {
+          if (!block.trim() || block.startsWith(':')) continue;
+          let eventType = 'message';
+          let dataLine = '';
+          for (const line of block.split('\n')) {
+            if (line.startsWith('event:')) eventType = line.slice(6).trim();
+            else if (line.startsWith('data:')) dataLine += line.slice(5).trim();
+          }
+          if (dataLine) emitEvent(eventType, dataLine);
+        }
+      }
+    } catch {
+      if (!abort.signal.aborted && hub.pollId === null) {
+        void fetchSnapshotFallback();
+        hub.pollId = window.setInterval(() => {
+          if (!abort.signal.aborted) void fetchSnapshotFallback();
+        }, 700);
+      }
+    }
+  };
+
+  void startSse();
+  return hub;
+}
+
+function cleanupRoomHubIfEmpty(roomId: string): void {
+  const hub = roomStreamHubs.get(roomId);
+  if (!hub) return;
+  if (
+    hub.roomCbs.size === 0 &&
+    hub.playerCbs.size === 0 &&
+    hub.santaCbs.size === 0 &&
+    hub.msgCbs.size === 0
+  ) {
+    hub.abort.abort();
+    if (hub.pollId !== null) clearInterval(hub.pollId);
+    roomStreamHubs.delete(roomId);
   }
 }
 
@@ -233,17 +383,33 @@ export async function signOutSurvivor(): Promise<void> {
 }
 
 export async function loadOrCreateSurvivorProfile(user: User): Promise<SurvivorProfile> {
+  await ensureActiveDatabaseLoaded();
   const chosenPendingName = pendingRegistrationName;
   pendingRegistrationName = null;
   const fallbackName = sanitizeDisplayName(
     chosenPendingName || user.displayName || (user.email ? user.email.split('@')[0] : 'Survivor')
   );
+
+  if (useDefaultProxy()) {
+    try {
+      return await authedApiFetch<SurvivorProfile>('/api/db/profile/ensure', {
+        method: 'POST',
+        body: JSON.stringify({ preferredName: fallbackName }),
+      });
+    } catch (error) {
+      if (error instanceof DbApiError && error.code === 'DEFAULT_DB_SETUP_REQUIRED') {
+        throw error;
+      }
+      throw error;
+    }
+  }
+
   const publicPath = `users/${user.uid}/public/profile`;
 
-  // Ensure private PII record exists
   try {
     const privRef = doc(db, 'users', user.uid, 'private', 'info');
     const privSnap = await getDoc(privRef);
+    trackAiSharedClientOp({ reads: 1 });
     if (!privSnap.exists()) {
       await setDoc(privRef, {
         uid: user.uid,
@@ -251,16 +417,17 @@ export async function loadOrCreateSurvivorProfile(user: User): Promise<SurvivorP
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
+      trackAiSharedClientOp({ writes: 1 });
     }
   } catch (error) {
-    // Gracefully absorb quota or permission errors for non-essential private logs
+    trackAiSharedClientOp({ error: error instanceof Error ? error.message : String(error) });
     console.warn('Non-critical private profile log ignored:', error);
   }
 
-  // Load or initialize public survivor profile
   try {
     const pubRef = doc(db, 'users', user.uid, 'public', 'profile');
     const pubSnap = await getDoc(pubRef);
+    trackAiSharedClientOp({ reads: 1 });
     if (pubSnap.exists()) {
       const d = pubSnap.data();
       const friendCode =
@@ -280,7 +447,6 @@ export async function loadOrCreateSurvivorProfile(user: User): Promise<SurvivorP
         gamesPlayed: Math.max(0, Number(d.gamesPlayed || 0)),
       };
 
-      // Backfill new customization/level fields for legacy profiles
       if (
         d.scarfColor === undefined ||
         d.hatStyle === undefined ||
@@ -296,6 +462,7 @@ export async function loadOrCreateSurvivorProfile(user: User): Promise<SurvivorP
           xp: profile.xp,
           updatedAt: serverTimestamp(),
         });
+        trackAiSharedClientOp({ writes: 1 });
       }
 
       await ensureFriendCodeLookup(user.uid, profile.friendCode);
@@ -322,6 +489,7 @@ export async function loadOrCreateSurvivorProfile(user: User): Promise<SurvivorP
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
+    trackAiSharedClientOp({ writes: 1 });
 
     await ensureFriendCodeLookup(user.uid, friendCode);
 
@@ -338,6 +506,7 @@ export async function loadOrCreateSurvivorProfile(user: User): Promise<SurvivorP
       gamesPlayed: 0,
     };
   } catch (error) {
+    trackAiSharedClientOp({ error: error instanceof Error ? error.message : String(error) });
     handleFirestoreError(error, OperationType.WRITE, publicPath);
     return {
       uid: user.uid,
@@ -363,6 +532,13 @@ export async function updateSurvivorAccount(
     hatStyle: HatStyle;
   }
 ): Promise<SurvivorProfile> {
+  if (useDefaultProxy()) {
+    return authedApiFetch<SurvivorProfile>('/api/db/profile', {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    });
+  }
+
   const path = `users/${uid}/public/profile`;
   const cleanName = sanitizeDisplayName(updates.displayName);
   const cleanCoat = sanitizeCoatColor(updates.coatColor);
@@ -379,6 +555,7 @@ export async function updateSurvivorAccount(
       updatedAt: serverTimestamp(),
     });
     const snap = await getDoc(ref);
+    trackAiSharedClientOp({ writes: 1, reads: 1 });
     const d = snap.data() || {};
     return {
       uid,
@@ -393,6 +570,7 @@ export async function updateSurvivorAccount(
       gamesPlayed: Number(d.gamesPlayed || 0),
     };
   } catch (error) {
+    trackAiSharedClientOp({ error: error instanceof Error ? error.message : String(error) });
     handleFirestoreError(error, OperationType.UPDATE, path);
     return {
       uid,
@@ -414,10 +592,22 @@ export async function recordMatchOutcome(
   escaped: boolean,
   earnedXp: number
 ): Promise<{ level: number; xp: number; leveledUp: boolean; escapes: number; gamesPlayed: number } | null> {
+  if (useDefaultProxy()) {
+    try {
+      return await authedApiFetch('/api/db/profile/outcome', {
+        method: 'POST',
+        body: JSON.stringify({ escaped, earnedXp }),
+      });
+    } catch {
+      return null;
+    }
+  }
+
   const path = `users/${uid}/public/profile`;
   try {
     const ref = doc(db, 'users', uid, 'public', 'profile');
     const snap = await getDoc(ref);
+    trackAiSharedClientOp({ reads: 1 });
     if (!snap.exists()) return null;
     const d = snap.data();
     const prevLevel = Math.max(1, Math.min(99, Number(d.level || 1)));
@@ -434,6 +624,7 @@ export async function recordMatchOutcome(
       gamesPlayed: nextGames,
       updatedAt: serverTimestamp(),
     });
+    trackAiSharedClientOp({ writes: 1 });
 
     return {
       ...progressed,
@@ -442,6 +633,7 @@ export async function recordMatchOutcome(
       gamesPlayed: nextGames,
     };
   } catch (error) {
+    trackAiSharedClientOp({ error: error instanceof Error ? error.message : String(error) });
     handleFirestoreError(error, OperationType.UPDATE, path);
     return null;
   }
@@ -452,11 +644,38 @@ export function subscribeFriends(
   uid: string,
   onFriends: (friends: FriendRecord[]) => void
 ): Unsubscribe {
+  if (useDefaultProxy()) {
+    let active = true;
+    const load = async () => {
+      if (!active || document.hidden) return;
+      try {
+        const res = await authedApiFetch<{ friends: FriendRecord[] }>('/api/db/friends');
+        if (active) onFriends(res.friends || []);
+      } catch {
+        // ignore transient errors
+      }
+    };
+    const refreshHandler = () => {
+      void load();
+    };
+    friendsRefreshListeners.add(refreshHandler);
+    void load();
+    const id = window.setInterval(() => {
+      void load();
+    }, 4500);
+    return () => {
+      active = false;
+      friendsRefreshListeners.delete(refreshHandler);
+      clearInterval(id);
+    };
+  }
+
   const path = `users/${uid}/friends`;
   const q = query(collection(db, 'users', uid, 'friends'), where('ownerUid', '==', uid));
   return onSnapshot(
     q,
     (snap) => {
+      trackAiSharedClientOp({ reads: Math.max(1, snap.size) });
       const list: FriendRecord[] = snap.docs.map((docSnap) => {
         const d = docSnap.data();
         return {
@@ -479,7 +698,10 @@ export function subscribeFriends(
       list.sort((a, b) => order[a.status] - order[b.status] || a.displayName.localeCompare(b.displayName));
       onFriends(list);
     },
-    (error) => handleFirestoreError(error, OperationType.LIST, path)
+    (error) => {
+      trackAiSharedClientOp({ error: error.message });
+      handleFirestoreError(error, OperationType.LIST, path);
+    }
   );
 }
 
@@ -487,11 +709,21 @@ export async function sendFriendRequestByUid(
   myProfile: SurvivorProfile,
   targetUid: string
 ): Promise<void> {
+  if (useDefaultProxy()) {
+    await authedApiFetch('/api/db/friends/request', {
+      method: 'POST',
+      body: JSON.stringify({ targetUid }),
+    });
+    triggerFriendsRefresh();
+    return;
+  }
+
   if (!targetUid || targetUid === myProfile.uid) {
     throw new Error('You cannot add yourself as a friend.');
   }
 
   const targetProfileSnap = await getDoc(doc(db, 'users', targetUid, 'public', 'profile'));
+  trackAiSharedClientOp({ reads: 1 });
   if (!targetProfileSnap.exists()) {
     throw new Error('Survivor profile not found.');
   }
@@ -505,6 +737,7 @@ export async function sendFriendRequestByUid(
 
   const myFriendRef = doc(db, 'users', myProfile.uid, 'friends', targetUid);
   const myExisting = await getDoc(myFriendRef);
+  trackAiSharedClientOp({ reads: 1 });
   if (myExisting.exists()) {
     const status = myExisting.data().status;
     if (status === 'accepted') throw new Error(`Already friends with ${targetName}.`);
@@ -529,7 +762,9 @@ export async function sendFriendRequestByUid(
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
+    trackAiSharedClientOp({ writes: 1 });
   } catch (error) {
+    trackAiSharedClientOp({ error: error instanceof Error ? error.message : String(error) });
     handleFirestoreError(error, OperationType.CREATE, `users/${myProfile.uid}/friends/${targetUid}`);
   }
 
@@ -548,7 +783,9 @@ export async function sendFriendRequestByUid(
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
+    trackAiSharedClientOp({ writes: 1 });
   } catch (error) {
+    trackAiSharedClientOp({ error: error instanceof Error ? error.message : String(error) });
     handleFirestoreError(error, OperationType.CREATE, `users/${targetUid}/friends/${myProfile.uid}`);
   }
 }
@@ -557,6 +794,15 @@ export async function sendFriendRequestByCode(
   myProfile: SurvivorProfile,
   rawCode: string
 ): Promise<void> {
+  if (useDefaultProxy()) {
+    await authedApiFetch('/api/db/friends/request', {
+      method: 'POST',
+      body: JSON.stringify({ code: rawCode }),
+    });
+    triggerFriendsRefresh();
+    return;
+  }
+
   const code = rawCode.trim().toUpperCase();
   if (!/^[A-Z0-9_-]{4,16}$/.test(code)) {
     throw new Error('Enter a valid Friend Code (e.g. SV-XXXXXX).');
@@ -566,6 +812,7 @@ export async function sendFriendRequestByCode(
   }
 
   const snap = await getDoc(doc(db, 'friendCodes', code));
+  trackAiSharedClientOp({ reads: 1 });
   if (!snap.exists()) {
     throw new Error(`No survivor found with Friend Code "${code}".`);
   }
@@ -577,7 +824,17 @@ export async function acceptFriendRequest(
   myProfile: SurvivorProfile,
   friendUid: string
 ): Promise<void> {
+  if (useDefaultProxy()) {
+    await authedApiFetch('/api/db/friends/accept', {
+      method: 'POST',
+      body: JSON.stringify({ friendUid }),
+    });
+    triggerFriendsRefresh();
+    return;
+  }
+
   const targetSnap = await getDoc(doc(db, 'users', friendUid, 'public', 'profile'));
+  trackAiSharedClientOp({ reads: 1 });
   const td = targetSnap.data() || {};
 
   try {
@@ -590,7 +847,9 @@ export async function acceptFriendRequest(
       level: Math.max(1, Math.min(99, Number(td.level || 1))),
       updatedAt: serverTimestamp(),
     });
+    trackAiSharedClientOp({ writes: 1 });
   } catch (error) {
+    trackAiSharedClientOp({ error: error instanceof Error ? error.message : String(error) });
     handleFirestoreError(error, OperationType.UPDATE, `users/${myProfile.uid}/friends/${friendUid}`);
   }
 
@@ -605,19 +864,30 @@ export async function acceptFriendRequest(
       level: Math.max(1, Math.min(99, myProfile.level)),
       updatedAt: serverTimestamp(),
     });
+    trackAiSharedClientOp({ writes: 1 });
   } catch {
     // Ignore if requester canceled simultaneously
   }
 }
 
 export async function removeOrDeclineFriend(myUid: string, friendUid: string): Promise<void> {
+  if (useDefaultProxy()) {
+    await authedApiFetch(`/api/db/friends/${encodeURIComponent(friendUid)}`, {
+      method: 'DELETE',
+    }).catch(() => {});
+    triggerFriendsRefresh();
+    return;
+  }
+
   try {
     await deleteDoc(doc(db, 'users', myUid, 'friends', friendUid));
+    trackAiSharedClientOp({ deletes: 1 });
   } catch {
     // ignore
   }
   try {
     await deleteDoc(doc(db, 'users', friendUid, 'friends', myUid));
+    trackAiSharedClientOp({ deletes: 1 });
   } catch {
     // ignore
   }
@@ -627,11 +897,38 @@ export async function removeOrDeclineFriend(myUid: string, friendUid: string): P
 export function subscribeGlobalChat(
   onMessages: (msgs: ChatMessageData[]) => void
 ): Unsubscribe {
+  if (useDefaultProxy()) {
+    let active = true;
+    const load = async () => {
+      if (!active || document.hidden) return;
+      try {
+        const res = await authedApiFetch<{ messages: ChatMessageData[] }>('/api/db/global-chat');
+        if (active) onMessages(res.messages || []);
+      } catch {
+        // ignore transient error
+      }
+    };
+    const refreshHandler = () => {
+      void load();
+    };
+    globalChatRefreshListeners.add(refreshHandler);
+    void load();
+    const id = window.setInterval(() => {
+      void load();
+    }, 2800);
+    return () => {
+      active = false;
+      globalChatRefreshListeners.delete(refreshHandler);
+      clearInterval(id);
+    };
+  }
+
   const path = 'globalChat';
   const q = query(collection(db, path), where('channel', '==', 'global'), limit(60));
   return onSnapshot(
     q,
     (snap) => {
+      trackAiSharedClientOp({ reads: Math.max(1, snap.size) });
       const oneHourAgo = Date.now() - 3600000;
       const msgs: ChatMessageData[] = snap.docs
         .map((docSnap) => {
@@ -650,14 +947,24 @@ export function subscribeGlobalChat(
       msgs.sort((a, b) => a.createdAtMs - b.createdAtMs);
       onMessages(msgs.slice(-40));
     },
-    (error) => handleFirestoreError(error, OperationType.LIST, path)
+    (error) => {
+      trackAiSharedClientOp({ error: error.message });
+      handleFirestoreError(error, OperationType.LIST, path);
+    }
   );
 }
 
 export async function clearGlobalChat(): Promise<void> {
+  if (useDefaultProxy()) {
+    await authedApiFetch('/api/db/global-chat', { method: 'DELETE' }).catch(() => {});
+    triggerGlobalChatRefresh();
+    return;
+  }
+
   try {
     const q = query(collection(db, 'globalChat'), where('channel', '==', 'global'));
     const snap = await getDocs(q);
+    trackAiSharedClientOp({ reads: Math.max(1, snap.size), deletes: snap.size });
     await Promise.allSettled(snap.docs.map((d) => deleteDoc(d.ref)));
   } catch {
     // ignore
@@ -670,6 +977,20 @@ export async function sendGlobalChatMessage(
 ): Promise<void> {
   const text = sanitizeChatText(rawText);
   if (!text) return;
+
+  if (useDefaultProxy()) {
+    await authedApiFetch('/api/db/global-chat', {
+      method: 'POST',
+      body: JSON.stringify({
+        displayName: profile.displayName,
+        coatColor: profile.coatColor,
+        text,
+      }),
+    });
+    triggerGlobalChatRefresh();
+    return;
+  }
+
   const msgId = generateMessageId();
   const path = `globalChat/${msgId}`;
   try {
@@ -681,7 +1002,9 @@ export async function sendGlobalChatMessage(
       text,
       createdAt: serverTimestamp(),
     });
+    trackAiSharedClientOp({ writes: 1 });
   } catch (error) {
+    trackAiSharedClientOp({ error: error instanceof Error ? error.message : String(error) });
     handleFirestoreError(error, OperationType.CREATE, path);
   }
 }
@@ -690,11 +1013,38 @@ export async function sendGlobalChatMessage(
 export function subscribePublicRooms(
   onRooms: (rooms: GameRoomData[]) => void
 ): Unsubscribe {
+  if (useDefaultProxy()) {
+    let active = true;
+    const load = async () => {
+      if (!active || document.hidden) return;
+      try {
+        const res = await authedApiFetch<{ rooms: GameRoomData[] }>('/api/db/rooms/public');
+        if (active) onRooms(res.rooms || []);
+      } catch {
+        // ignore transient error
+      }
+    };
+    const refreshHandler = () => {
+      void load();
+    };
+    publicRoomsRefreshListeners.add(refreshHandler);
+    void load();
+    const id = window.setInterval(() => {
+      void load();
+    }, 3000);
+    return () => {
+      active = false;
+      publicRoomsRefreshListeners.delete(refreshHandler);
+      clearInterval(id);
+    };
+  }
+
   const path = 'rooms';
   const q = query(collection(db, path), where('isPublic', '==', true), limit(30));
   return onSnapshot(
     q,
     (snap) => {
+      trackAiSharedClientOp({ reads: Math.max(1, snap.size) });
       const list: GameRoomData[] = snap.docs
         .map((docSnap) => {
           const d = docSnap.data();
@@ -725,11 +1075,14 @@ export function subscribePublicRooms(
             updatedAtMs: d.updatedAt?.toMillis ? d.updatedAt.toMillis() : 0,
           };
         })
-        .filter((r) => r.status !== 'finished' && r.playerCount > 0 && (Date.now() - (r.updatedAtMs || 0) < 180000));
+        .filter((r) => r.status !== 'finished' && r.playerCount > 0 && Date.now() - (r.updatedAtMs || 0) < 180000);
       list.sort((a, b) => (b.updatedAtMs || 0) - (a.updatedAtMs || 0));
       onRooms(list);
     },
-    (error) => handleFirestoreError(error, OperationType.LIST, path)
+    (error) => {
+      trackAiSharedClientOp({ error: error.message });
+      handleFirestoreError(error, OperationType.LIST, path);
+    }
   );
 }
 
@@ -748,6 +1101,59 @@ export async function createMultiplayerRoom(
   const scaling = getLevelScaling(cleanLevel, difficulty);
   const ornamentsTotal = scaling.ornamentCount;
   const spawnW = cellToWorld(1, 1, scaling.mazeSize, CELL_SIZE);
+
+  const initialMaze = generateMaze(
+    scaling.ornamentCount,
+    mazeSeed,
+    scaling.mazeSize,
+    scaling.batteryCount,
+    scaling.santaCount
+  );
+  const santaSpawnWorld = cellToWorld(
+    initialMaze.santaSpawn.r,
+    initialMaze.santaSpawn.c,
+    scaling.mazeSize,
+    CELL_SIZE
+  );
+  const extraSantaWorlds = initialMaze.santaSpawns.slice(1, 3).map((coord) => {
+    const pos = cellToWorld(coord.r, coord.c, scaling.mazeSize, CELL_SIZE);
+    return {
+      x: Number(pos.x.toFixed(2)),
+      z: Number(pos.z.toFixed(2)),
+      yaw: 0,
+      speed: 0,
+      alerted: false,
+      stunRemaining: 0,
+    };
+  });
+
+  if (useDefaultProxy()) {
+    const room = await authedApiFetch<GameRoomData>('/api/db/rooms', {
+      method: 'POST',
+      body: JSON.stringify({
+        roomId,
+        name: finalName,
+        hostName: profile.displayName,
+        coatColor: profile.coatColor,
+        scarfColor: profile.scarfColor,
+        hatStyle: profile.hatStyle,
+        difficulty,
+        level: cleanLevel,
+        mazeSeed,
+        ornamentsTotal,
+        isPublic,
+        spawnX: spawnW.x,
+        spawnZ: spawnW.z,
+        santaState: {
+          x: santaSpawnWorld.x,
+          z: santaSpawnWorld.z,
+          extras: extraSantaWorlds,
+        },
+      }),
+    });
+    triggerPublicRoomsRefresh();
+    return room;
+  }
 
   const roomPath = `rooms/${roomId}`;
   const playerPath = `rooms/${roomId}/players/${profile.uid}`;
@@ -776,7 +1182,9 @@ export async function createMultiplayerRoom(
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
+    trackAiSharedClientOp({ writes: 1 });
   } catch (error) {
+    trackAiSharedClientOp({ error: error instanceof Error ? error.message : String(error) });
     handleFirestoreError(error, OperationType.CREATE, roomPath);
   }
 
@@ -802,22 +1210,26 @@ export async function createMultiplayerRoom(
       revivedBy: '',
       updatedAt: serverTimestamp(),
     });
+    trackAiSharedClientOp({ writes: 1 });
   } catch (error) {
+    trackAiSharedClientOp({ error: error instanceof Error ? error.message : String(error) });
     handleFirestoreError(error, OperationType.CREATE, playerPath);
   }
 
   try {
     await setDoc(doc(db, 'rooms', roomId, 'santa', 'live'), {
-      x: 0,
-      z: 0,
+      x: Number(santaSpawnWorld.x.toFixed(2)),
+      z: Number(santaSpawnWorld.z.toFixed(2)),
       yaw: 0,
       speed: 0,
       alerted: false,
       stunRemaining: 0,
-      extras: [],
+      extras: extraSantaWorlds,
       updatedAt: serverTimestamp(),
     });
+    trackAiSharedClientOp({ writes: 1 });
   } catch (error) {
+    trackAiSharedClientOp({ error: error instanceof Error ? error.message : String(error) });
     handleFirestoreError(error, OperationType.CREATE, santaPath);
   }
 
@@ -851,10 +1263,28 @@ export async function joinMultiplayerRoom(
   if (!/^[a-zA-Z0-9_\-]{4,32}$/.test(roomId)) {
     throw new Error('Invalid room code format.');
   }
+
+  if (useDefaultProxy()) {
+    const defaultScaling = getLevelScaling(1, 'normal');
+    const spawnW = cellToWorld(1, 1, defaultScaling.mazeSize, CELL_SIZE);
+    return authedApiFetch<GameRoomData>(`/api/db/rooms/${encodeURIComponent(roomId)}/join`, {
+      method: 'POST',
+      body: JSON.stringify({
+        displayName: profile.displayName,
+        coatColor: profile.coatColor,
+        scarfColor: profile.scarfColor,
+        hatStyle: profile.hatStyle,
+        spawnX: spawnW.x,
+        spawnZ: spawnW.z,
+      }),
+    });
+  }
+
   const roomPath = `rooms/${roomId}`;
   try {
     const roomRef = doc(db, 'rooms', roomId);
     const snap = await getDoc(roomRef);
+    trackAiSharedClientOp({ reads: 1 });
     if (!snap.exists()) {
       throw new Error(`Room "${roomId}" was not found.`);
     }
@@ -870,6 +1300,7 @@ export async function joinMultiplayerRoom(
 
     const playerRef = doc(db, 'rooms', roomId, 'players', profile.uid);
     const existingPlayer = await getDoc(playerRef);
+    trackAiSharedClientOp({ reads: 1 });
 
     const prevPlayer = existingPlayer.exists() ? existingPlayer.data() : null;
     await setDoc(playerRef, {
@@ -893,12 +1324,14 @@ export async function joinMultiplayerRoom(
       revivedBy: prevPlayer ? String(prevPlayer.revivedBy || '').slice(0, 24) : '',
       updatedAt: serverTimestamp(),
     });
+    trackAiSharedClientOp({ writes: 1 });
 
     if (!existingPlayer.exists()) {
       await updateDoc(roomRef, {
         playerCount: Math.min(12, Number(d.playerCount || 0) + 1),
         updatedAt: serverTimestamp(),
       });
+      trackAiSharedClientOp({ writes: 1 });
     }
 
     return {
@@ -930,6 +1363,7 @@ export async function joinMultiplayerRoom(
     ) {
       throw error;
     }
+    trackAiSharedClientOp({ error: error instanceof Error ? error.message : String(error) });
     handleFirestoreError(error, OperationType.WRITE, roomPath);
     const message = error instanceof Error ? error.message : 'Unable to join room.';
     throw new Error(message);
@@ -937,20 +1371,30 @@ export async function joinMultiplayerRoom(
 }
 
 export async function leaveMultiplayerRoom(roomId: string, uid: string): Promise<void> {
+  if (useDefaultProxy()) {
+    await authedApiFetch(`/api/db/rooms/${encodeURIComponent(roomId)}/leave`, {
+      method: 'POST',
+    }).catch(() => {});
+    triggerPublicRoomsRefresh();
+    return;
+  }
+
   const roomRef = doc(db, 'rooms', roomId);
   const playerRef = doc(db, 'rooms', roomId, 'players', uid);
   try {
     const playersBeforeSnap = await getDocs(collection(db, 'rooms', roomId, 'players'));
+    trackAiSharedClientOp({ reads: Math.max(1, playersBeforeSnap.size) });
     const remainingBefore = playersBeforeSnap.docs.filter((d) => d.id !== uid);
     if (remainingBefore.length === 0) {
-      // Delete parent room while our player doc still exists (passes security rule), then remove player doc
       await deleteDoc(roomRef);
       await deleteDoc(playerRef);
+      trackAiSharedClientOp({ deletes: 2 });
       return;
     }
 
     await deleteDoc(playerRef);
     const snap = await getDoc(roomRef);
+    trackAiSharedClientOp({ deletes: 1, reads: 1 });
     if (snap.exists()) {
       const d = snap.data();
       const nextCount = remainingBefore.length;
@@ -969,6 +1413,7 @@ export async function leaveMultiplayerRoom(roomId: string, uid: string): Promise
           updatedAt: serverTimestamp(),
         });
       }
+      trackAiSharedClientOp({ writes: 1 });
     }
   } catch {
     // Ignore cleanup race if room already deleted
@@ -976,13 +1421,30 @@ export async function leaveMultiplayerRoom(roomId: string, uid: string): Promise
 }
 
 export async function claimRoomHost(roomId: string, profile: SurvivorProfile): Promise<boolean> {
+  if (useDefaultProxy()) {
+    try {
+      const res = await authedApiFetch<{ claimed: boolean }>(
+        `/api/db/rooms/${encodeURIComponent(roomId)}/claim-host`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ displayName: profile.displayName }),
+        }
+      );
+      return Boolean(res.claimed);
+    } catch {
+      return false;
+    }
+  }
+
   try {
     const roomRef = doc(db, 'rooms', roomId);
     const snap = await getDoc(roomRef);
+    trackAiSharedClientOp({ reads: 1 });
     if (!snap.exists()) return false;
     const d = snap.data();
     if (d.status === 'finished' || d.hostId === profile.uid) return d.hostId === profile.uid;
     const oldHostPlayerSnap = await getDoc(doc(db, 'rooms', roomId, 'players', String(d.hostId || '')));
+    trackAiSharedClientOp({ reads: 1 });
     if (oldHostPlayerSnap.exists()) return false;
     await updateDoc(roomRef, {
       hostId: profile.uid,
@@ -990,6 +1452,7 @@ export async function claimRoomHost(roomId: string, profile: SurvivorProfile): P
       playerCount: Math.max(1, Number(d.playerCount || 1)),
       updatedAt: serverTimestamp(),
     });
+    trackAiSharedClientOp({ writes: 1 });
     return true;
   } catch {
     return false;
@@ -997,20 +1460,37 @@ export async function claimRoomHost(roomId: string, profile: SurvivorProfile): P
 }
 
 export async function startMultiplayerRoom(roomId: string): Promise<void> {
+  if (useDefaultProxy()) {
+    await authedApiFetch(`/api/db/rooms/${encodeURIComponent(roomId)}/start`, {
+      method: 'POST',
+    });
+    return;
+  }
+
   const path = `rooms/${roomId}`;
   try {
     await updateDoc(doc(db, 'rooms', roomId), {
       status: 'playing',
       updatedAt: serverTimestamp(),
     });
+    trackAiSharedClientOp({ writes: 1 });
   } catch (error) {
+    trackAiSharedClientOp({ error: error instanceof Error ? error.message : String(error) });
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
 }
 
 export async function finishMultiplayerRoom(roomId: string): Promise<void> {
+  if (useDefaultProxy()) {
+    await authedApiFetch(`/api/db/rooms/${encodeURIComponent(roomId)}`, {
+      method: 'DELETE',
+    }).catch(() => {});
+    return;
+  }
+
   try {
     await deleteDoc(doc(db, 'rooms', roomId));
+    trackAiSharedClientOp({ deletes: 1 });
   } catch {
     // ignore if already deleted
   }
@@ -1021,6 +1501,14 @@ export async function collectRoomOrnament(
   ornamentId: number,
   ornamentsTotal: number
 ): Promise<void> {
+  if (useDefaultProxy()) {
+    await authedApiFetch(`/api/db/rooms/${encodeURIComponent(roomId)}/action`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'ornament', ornamentId, ornamentsTotal }),
+    }).catch(() => {});
+    return;
+  }
+
   const path = `rooms/${roomId}`;
   try {
     const roomRef = doc(db, 'rooms', roomId);
@@ -1038,12 +1526,22 @@ export async function collectRoomOrnament(
         updatedAt: serverTimestamp(),
       });
     });
+    trackAiSharedClientOp({ reads: 1, writes: 1 });
   } catch (error) {
+    trackAiSharedClientOp({ error: error instanceof Error ? error.message : String(error) });
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
 }
 
 export async function collectRoomWeapon(roomId: string, weaponId: number): Promise<void> {
+  if (useDefaultProxy()) {
+    await authedApiFetch(`/api/db/rooms/${encodeURIComponent(roomId)}/action`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'weapon', itemId: weaponId }),
+    }).catch(() => {});
+    return;
+  }
+
   const path = `rooms/${roomId}`;
   try {
     const roomRef = doc(db, 'rooms', roomId);
@@ -1060,12 +1558,22 @@ export async function collectRoomWeapon(roomId: string, weaponId: number): Promi
         updatedAt: serverTimestamp(),
       });
     });
+    trackAiSharedClientOp({ reads: 1, writes: 1 });
   } catch (error) {
+    trackAiSharedClientOp({ error: error instanceof Error ? error.message : String(error) });
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
 }
 
 export async function collectRoomBattery(roomId: string, batteryId: number): Promise<void> {
+  if (useDefaultProxy()) {
+    await authedApiFetch(`/api/db/rooms/${encodeURIComponent(roomId)}/action`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'battery', itemId: batteryId }),
+    }).catch(() => {});
+    return;
+  }
+
   const path = `rooms/${roomId}`;
   try {
     const roomRef = doc(db, 'rooms', roomId);
@@ -1082,12 +1590,22 @@ export async function collectRoomBattery(roomId: string, batteryId: number): Pro
         updatedAt: serverTimestamp(),
       });
     });
+    trackAiSharedClientOp({ reads: 1, writes: 1 });
   } catch (error) {
+    trackAiSharedClientOp({ error: error instanceof Error ? error.message : String(error) });
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
 }
 
 export async function triggerRoomTrap(roomId: string, trapId: number): Promise<void> {
+  if (useDefaultProxy()) {
+    await authedApiFetch(`/api/db/rooms/${encodeURIComponent(roomId)}/action`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'trap', itemId: trapId }),
+    }).catch(() => {});
+    return;
+  }
+
   const path = `rooms/${roomId}`;
   try {
     const roomRef = doc(db, 'rooms', roomId);
@@ -1104,24 +1622,43 @@ export async function triggerRoomTrap(roomId: string, trapId: number): Promise<v
         updatedAt: serverTimestamp(),
       });
     });
+    trackAiSharedClientOp({ reads: 1, writes: 1 });
   } catch (error) {
+    trackAiSharedClientOp({ error: error instanceof Error ? error.message : String(error) });
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
 }
 
 export async function advanceRoomWeaponWave(roomId: string, wave: number): Promise<void> {
+  if (useDefaultProxy()) {
+    await authedApiFetch(`/api/db/rooms/${encodeURIComponent(roomId)}/action`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'wave', wave }),
+    }).catch(() => {});
+    return;
+  }
+
   const cleanWave = Math.max(0, Math.min(99, Math.floor(wave)));
   try {
     await updateDoc(doc(db, 'rooms', roomId), {
       weaponWave: cleanWave,
       updatedAt: serverTimestamp(),
     });
+    trackAiSharedClientOp({ writes: 1 });
   } catch {
     // Non-fatal if room finished
   }
 }
 
 export async function triggerRoomSantaStun(roomId: string): Promise<void> {
+  if (useDefaultProxy()) {
+    await authedApiFetch(`/api/db/rooms/${encodeURIComponent(roomId)}/action`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'stun' }),
+    }).catch(() => {});
+    return;
+  }
+
   const path = `rooms/${roomId}`;
   try {
     const roomRef = doc(db, 'rooms', roomId);
@@ -1136,7 +1673,9 @@ export async function triggerRoomSantaStun(roomId: string): Promise<void> {
         updatedAt: serverTimestamp(),
       });
     });
+    trackAiSharedClientOp({ reads: 1, writes: 1 });
   } catch (error) {
+    trackAiSharedClientOp({ error: error instanceof Error ? error.message : String(error) });
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
 }
@@ -1157,6 +1696,20 @@ export async function syncLocalPlayerState(
     lastShotHit: boolean;
   }
 ): Promise<void> {
+  if (useDefaultProxy()) {
+    await authedApiFetch(`/api/db/rooms/${encodeURIComponent(roomId)}/player`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        displayName: profile.displayName,
+        coatColor: profile.coatColor,
+        scarfColor: profile.scarfColor,
+        hatStyle: profile.hatStyle,
+        ...state,
+      }),
+    }).catch(() => {});
+    return;
+  }
+
   try {
     await updateDoc(doc(db, 'rooms', roomId, 'players', profile.uid), {
       displayName: sanitizeDisplayName(profile.displayName),
@@ -1175,6 +1728,7 @@ export async function syncLocalPlayerState(
       lastShotHit: Boolean(state.lastShotHit),
       updatedAt: serverTimestamp(),
     });
+    trackAiSharedClientOp({ writes: 1 });
   } catch {
     // Silent on transient tick sync if player left or room closed
   }
@@ -1185,6 +1739,21 @@ export async function reviveRoomPlayer(
   targetUid: string,
   reviverName: string
 ): Promise<boolean> {
+  if (useDefaultProxy()) {
+    try {
+      const res = await authedApiFetch<{ revived: boolean }>(
+        `/api/db/rooms/${encodeURIComponent(roomId)}/action`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ type: 'revive', targetUid, reviverName }),
+        }
+      );
+      return Boolean(res.revived);
+    } catch {
+      return false;
+    }
+  }
+
   const targetRef = doc(db, 'rooms', roomId, 'players', targetUid);
   try {
     let revived = false;
@@ -1202,6 +1771,7 @@ export async function reviveRoomPlayer(
       });
       revived = true;
     });
+    trackAiSharedClientOp({ reads: 1, writes: revived ? 1 : 0 });
     return revived;
   } catch {
     return false;
@@ -1212,6 +1782,14 @@ export async function syncHostSantaState(
   roomId: string,
   state: SantaLiveData
 ): Promise<void> {
+  if (useDefaultProxy()) {
+    await authedApiFetch(`/api/db/rooms/${encodeURIComponent(roomId)}/santa`, {
+      method: 'PUT',
+      body: JSON.stringify(state),
+    }).catch(() => {});
+    return;
+  }
+
   try {
     const cleanExtras = Array.isArray(state.extras)
       ? state.extras.slice(0, 2).map((e) => ({
@@ -1233,6 +1811,7 @@ export async function syncHostSantaState(
       extras: cleanExtras,
       updatedAt: serverTimestamp(),
     });
+    trackAiSharedClientOp({ writes: 1 });
   } catch {
     // Silent on transient tick sync
   }
@@ -1242,10 +1821,20 @@ export function subscribeRoom(
   roomId: string,
   onRoom: (room: GameRoomData | null) => void
 ): Unsubscribe {
+  if (useDefaultProxy()) {
+    const hub = getOrStartRoomHub(roomId);
+    hub.roomCbs.add(onRoom);
+    return () => {
+      hub.roomCbs.delete(onRoom);
+      cleanupRoomHubIfEmpty(roomId);
+    };
+  }
+
   const path = `rooms/${roomId}`;
   return onSnapshot(
     doc(db, 'rooms', roomId),
     (snap) => {
+      trackAiSharedClientOp({ reads: 1 });
       if (!snap.exists()) {
         onRoom(null);
         return;
@@ -1272,7 +1861,10 @@ export function subscribeRoom(
         playerCount: Number(d.playerCount || 0),
       });
     },
-    (error) => handleFirestoreError(error, OperationType.GET, path)
+    (error) => {
+      trackAiSharedClientOp({ error: error.message });
+      handleFirestoreError(error, OperationType.GET, path);
+    }
   );
 }
 
@@ -1280,11 +1872,21 @@ export function subscribeRoomPlayers(
   roomId: string,
   onPlayers: (players: RoomPlayerData[]) => void
 ): Unsubscribe {
+  if (useDefaultProxy()) {
+    const hub = getOrStartRoomHub(roomId);
+    hub.playerCbs.add(onPlayers);
+    return () => {
+      hub.playerCbs.delete(onPlayers);
+      cleanupRoomHubIfEmpty(roomId);
+    };
+  }
+
   const path = `rooms/${roomId}/players`;
   const q = query(collection(db, 'rooms', roomId, 'players'), where('roomId', '==', roomId));
   return onSnapshot(
     q,
     (snap) => {
+      trackAiSharedClientOp({ reads: Math.max(1, snap.size) });
       const list: RoomPlayerData[] = snap.docs.map((docSnap) => {
         const d = docSnap.data();
         return {
@@ -1310,7 +1912,10 @@ export function subscribeRoomPlayers(
       });
       onPlayers(list);
     },
-    (error) => handleFirestoreError(error, OperationType.LIST, path)
+    (error) => {
+      trackAiSharedClientOp({ error: error.message });
+      handleFirestoreError(error, OperationType.LIST, path);
+    }
   );
 }
 
@@ -1318,10 +1923,20 @@ export function subscribeRoomSanta(
   roomId: string,
   onSanta: (santa: SantaLiveData) => void
 ): Unsubscribe {
+  if (useDefaultProxy()) {
+    const hub = getOrStartRoomHub(roomId);
+    hub.santaCbs.add(onSanta);
+    return () => {
+      hub.santaCbs.delete(onSanta);
+      cleanupRoomHubIfEmpty(roomId);
+    };
+  }
+
   const path = `rooms/${roomId}/santa/live`;
   return onSnapshot(
     doc(db, 'rooms', roomId, 'santa', 'live'),
     (snap) => {
+      trackAiSharedClientOp({ reads: 1 });
       if (!snap.exists()) return;
       const d = snap.data();
       const rawExtras = Array.isArray(d.extras) ? d.extras.slice(0, 2) : [];
@@ -1344,7 +1959,10 @@ export function subscribeRoomSanta(
         updatedAtMs: Date.now(),
       });
     },
-    (error) => handleFirestoreError(error, OperationType.GET, path)
+    (error) => {
+      trackAiSharedClientOp({ error: error.message });
+      handleFirestoreError(error, OperationType.GET, path);
+    }
   );
 }
 
@@ -1352,11 +1970,21 @@ export function subscribeRoomChat(
   roomId: string,
   onMessages: (msgs: ChatMessageData[]) => void
 ): Unsubscribe {
+  if (useDefaultProxy()) {
+    const hub = getOrStartRoomHub(roomId);
+    hub.msgCbs.add(onMessages);
+    return () => {
+      hub.msgCbs.delete(onMessages);
+      cleanupRoomHubIfEmpty(roomId);
+    };
+  }
+
   const path = `rooms/${roomId}/messages`;
   const q = query(collection(db, 'rooms', roomId, 'messages'), where('roomId', '==', roomId));
   return onSnapshot(
     q,
     (snap) => {
+      trackAiSharedClientOp({ reads: Math.max(1, snap.size) });
       const oneHourAgo = Date.now() - 3600000;
       const msgs: ChatMessageData[] = snap.docs
         .map((docSnap) => {
@@ -1375,7 +2003,10 @@ export function subscribeRoomChat(
       msgs.sort((a, b) => a.createdAtMs - b.createdAtMs);
       onMessages(msgs.slice(-60));
     },
-    (error) => handleFirestoreError(error, OperationType.LIST, path)
+    (error) => {
+      trackAiSharedClientOp({ error: error.message });
+      handleFirestoreError(error, OperationType.LIST, path);
+    }
   );
 }
 
@@ -1386,6 +2017,19 @@ export async function sendRoomChatMessage(
 ): Promise<void> {
   const text = sanitizeChatText(rawText);
   if (!text) return;
+
+  if (useDefaultProxy()) {
+    await authedApiFetch(`/api/db/rooms/${encodeURIComponent(roomId)}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        displayName: profile.displayName,
+        coatColor: profile.coatColor,
+        text,
+      }),
+    });
+    return;
+  }
+
   const msgId = generateMessageId();
   const path = `rooms/${roomId}/messages/${msgId}`;
   try {
@@ -1397,7 +2041,9 @@ export async function sendRoomChatMessage(
       text,
       createdAt: serverTimestamp(),
     });
+    trackAiSharedClientOp({ writes: 1 });
   } catch (error) {
+    trackAiSharedClientOp({ error: error instanceof Error ? error.message : String(error) });
     handleFirestoreError(error, OperationType.CREATE, path);
   }
 }

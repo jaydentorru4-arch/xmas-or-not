@@ -99,6 +99,8 @@ interface SantaAgent {
   currentSpeed: number;
   stunRemaining: number;
   stuckTimer: number;
+  stuckCount: number;
+  forceBfsTimer: number;
   lastProgressPos: THREE.Vector3;
 }
 
@@ -200,6 +202,7 @@ export class MazeEngine {
   private lastSeenReviveCount = 0;
   private reviveGraceTimer = 0;
   private lastReviveClickMs = 0;
+  private lastShotStunHandledMs = 0;
 
   // Player kinematics & Dodge
   private playerPos = new THREE.Vector3(0, EYE_HEIGHT, 0);
@@ -737,6 +740,8 @@ export class MazeEngine {
         currentSpeed: 0,
         stunRemaining: 0,
         stuckTimer: 0,
+        stuckCount: 0,
+        forceBfsTimer: 0,
         lastProgressPos: pos.clone(),
       };
     });
@@ -782,6 +787,7 @@ export class MazeEngine {
     this.lastSeenReviveCount = 0;
     this.reviveGraceTimer = 0;
     this.lastReviveClickMs = 0;
+    this.lastShotStunHandledMs = 0;
     this.lastSyncedPlayerPos.set(999, 0, 999);
     this.lastSyncedYaw = 999;
     this.lastSyncedStateKey = '';
@@ -930,6 +936,8 @@ export class MazeEngine {
       for (const s of this.santas) {
         s.lastProgressPos.copy(s.pos);
         s.stuckTimer = 0;
+        s.stuckCount = 0;
+        s.forceBfsTimer = 0;
       }
     }
     this.pushHud();
@@ -1033,23 +1041,48 @@ export class MazeEngine {
           } else if (events.justShot) {
             this.audio.playWeaponFire('tranq_dart');
             if (events.shotHit) {
-              // Stun the Santa nearest the shooting survivor immediately
+              // Match the Santa aligned with the shooter's aim and line-of-sight (fallback to nearest)
+              const aimFwdX = -Math.sin(rig.targetYaw);
+              const aimFwdZ = -Math.cos(rig.targetYaw);
               let targetSanta: SantaAgent | null = null;
-              let bestD = Infinity;
+              let bestScore = Infinity;
+              let fallbackSanta: SantaAgent | null = null;
+              let fallbackDist = Infinity;
+
               for (const s of this.santas) {
-                const d = Math.hypot(s.pos.x - rig.targetX, s.pos.z - rig.targetZ);
-                if (d < bestD) {
-                  bestD = d;
+                const dx = s.pos.x - rig.targetX;
+                const dz = s.pos.z - rig.targetZ;
+                const d = Math.hypot(dx, dz);
+                if (d < fallbackDist) {
+                  fallbackDist = d;
+                  fallbackSanta = s;
+                }
+                const losClear =
+                  this.mazeData &&
+                  hasLineOfSight(this.mazeData.grid, rig.targetX, rig.targetZ, s.pos.x, s.pos.z, CELL_SIZE);
+                if (!losClear) continue;
+                const dot = d > 0.01 ? (dx * aimFwdX + dz * aimFwdZ) / d : 1;
+                const aimPenalty = Math.max(0, 1 - dot) * 14;
+                const stunPenalty = s.stunRemaining > 0 ? 10 : 0;
+                const score = d + aimPenalty + stunPenalty;
+                if (score < bestScore) {
+                  bestScore = score;
                   targetSanta = s;
                 }
               }
+
+              targetSanta = targetSanta || fallbackSanta;
               if (targetSanta) {
+                this.lastShotStunHandledMs = performance.now();
                 targetSanta.stunRemaining = 30.0;
                 targetSanta.alerted = false;
                 targetSanta.alertTimer = 0;
                 targetSanta.currentSpeed = 0;
                 targetSanta.velX = 0;
                 targetSanta.velZ = 0;
+                targetSanta.stuckTimer = 0;
+                targetSanta.stuckCount = 0;
+                targetSanta.forceBfsTimer = 0;
                 this.audio.playSantaStunned();
                 this.showBanner(`${p.displayName} stunned an Evil Santa for 30s!`, 4.0);
                 if (this.isHost) {
@@ -1086,19 +1119,27 @@ export class MazeEngine {
 
   public applyRemoteSantaState(santa: SantaLiveData): void {
     if (!this.isMultiplayer || this.isHost) return;
+    if (!Number.isFinite(santa.x) || !Number.isFinite(santa.z)) return;
     this.lastRemoteSantaAtMs = santa.updatedAtMs || Date.now();
     if (!this.remoteSantaTarget) {
       const primary = this.santas[0];
-      if (primary && Math.hypot(santa.x - primary.pos.x, santa.z - primary.pos.z) > 12) {
+      if (primary && Math.hypot(santa.x - primary.pos.x, santa.z - primary.pos.z) > 10) {
         primary.pos.set(santa.x, 0, santa.z);
-        primary.yaw = santa.yaw;
+        this.resolveMazeCollisions(primary.pos, 0.55);
+        primary.yaw = Number.isFinite(santa.yaw) ? santa.yaw : primary.yaw;
       }
       if (Array.isArray(santa.extras)) {
         santa.extras.forEach((ex, i) => {
           const agent = this.santas[i + 1];
-          if (agent && Math.hypot(ex.x - agent.pos.x, ex.z - agent.pos.z) > 12) {
+          if (
+            agent &&
+            Number.isFinite(ex.x) &&
+            Number.isFinite(ex.z) &&
+            Math.hypot(ex.x - agent.pos.x, ex.z - agent.pos.z) > 10
+          ) {
             agent.pos.set(ex.x, 0, ex.z);
-            agent.yaw = ex.yaw;
+            this.resolveMazeCollisions(agent.pos, 0.55);
+            agent.yaw = Number.isFinite(ex.yaw) ? ex.yaw : agent.yaw;
           }
         });
       }
@@ -1189,8 +1230,8 @@ export class MazeEngine {
 
     if (santaStunNonce > this.lastSeenStunNonce) {
       this.lastSeenStunNonce = santaStunNonce;
-      const anyFreshlyStunned = this.santas.some((s) => s.stunRemaining >= 27);
-      if (!anyFreshlyStunned) {
+      const recentlyHandledByShot = performance.now() - this.lastShotStunHandledMs < 1500;
+      if (!recentlyHandledByShot) {
         const target = this.santas.find((s) => s.stunRemaining <= 0) || this.santas[0];
         if (target) {
           target.stunRemaining = 30.0;
@@ -1199,6 +1240,9 @@ export class MazeEngine {
           target.currentSpeed = 0;
           target.velX = 0;
           target.velZ = 0;
+          target.stuckTimer = 0;
+          target.stuckCount = 0;
+          target.forceBfsTimer = 0;
           this.audio.playSantaStunned();
           this.showBanner('Evil Santa stunned for 30 seconds!', 4.5);
         }
@@ -1445,12 +1489,16 @@ export class MazeEngine {
     this.lastShotHit = hitSanta;
 
     if (bestHitSanta) {
+      this.lastShotStunHandledMs = performance.now();
       bestHitSanta.stunRemaining = spec.stunSeconds;
       bestHitSanta.alerted = false;
       bestHitSanta.alertTimer = 0;
       bestHitSanta.currentSpeed = 0;
       bestHitSanta.velX = 0;
       bestHitSanta.velZ = 0;
+      bestHitSanta.stuckTimer = 0;
+      bestHitSanta.stuckCount = 0;
+      bestHitSanta.forceBfsTimer = 0;
       this.audio.playSantaStunned();
       const labelSuffix = this.santas.length > 1 ? ` #${bestHitSanta.index + 1}` : '';
       this.showBanner(`Direct hit with ${spec.label}! Santa${labelSuffix} stunned for 30 seconds!`, 5.0);
@@ -1676,9 +1724,9 @@ export class MazeEngine {
           }
           const hasActive = Array.from(this.remotePlayers.values()).some((r) => r.alive && !r.escaped);
           if (hasActive) {
-            this.updateSantaAI(0.25, performance.now() / 1000, false);
+            this.updateSantaAI(0.28, performance.now() / 1000, false);
           }
-        }, 250);
+        }, 280);
       }
     } else if (this.hiddenHostTimerId !== null) {
       clearInterval(this.hiddenHostTimerId);
@@ -1720,7 +1768,11 @@ export class MazeEngine {
     window.removeEventListener('pointerup', this.handlePointerUp);
   }
 
-  private resolveMazeCollisions(pos: THREE.Vector3, radius: number): void {
+  private resolveMazeCollisions(
+    pos: THREE.Vector3,
+    radius: number,
+    vel?: { vx: number; vz: number }
+  ): void {
     const { size, cellSize, grid } = this.mazeData;
     const halfMaze = ((size - 1) * cellSize) / 2;
     const halfWall = cellSize / 2;
@@ -1745,17 +1797,30 @@ export class MazeEngine {
 
         if (distSq < radius * radius) {
           const dist = Math.sqrt(distSq);
+          let nx = 0;
+          let nz = 0;
           if (dist > 0.0001) {
             const overlap = radius - dist;
-            pos.x += (dx / dist) * overlap;
-            pos.z += (dz / dist) * overlap;
+            nx = dx / dist;
+            nz = dz / dist;
+            pos.x += nx * overlap;
+            pos.z += nz * overlap;
           } else {
             const penX = halfWall + radius - Math.abs(pos.x - wx);
             const penZ = halfWall + radius - Math.abs(pos.z - wz);
             if (penX < penZ) {
-              pos.x += pos.x >= wx ? penX : -penX;
+              nx = pos.x >= wx ? 1 : -1;
+              pos.x += nx * penX;
             } else {
-              pos.z += pos.z >= wz ? penZ : -penZ;
+              nz = pos.z >= wz ? 1 : -1;
+              pos.z += nz * penZ;
+            }
+          }
+          if (vel) {
+            const vn = vel.vx * nx + vel.vz * nz;
+            if (vn < 0) {
+              vel.vx -= vn * nx;
+              vel.vz -= vn * nz;
             }
           }
         }
@@ -1798,7 +1863,7 @@ export class MazeEngine {
     az: number,
     bx: number,
     bz: number,
-    halfWidth = 0.52
+    halfWidth = 0.64
   ): boolean {
     const dx = bx - ax;
     const dz = bz - az;
@@ -1896,15 +1961,15 @@ export class MazeEngine {
   private updateSantaAI(dt: number, nowSec: number, localSprinting: boolean): number {
     if (this.santas.length === 0) return 999;
 
-    // Non-host multiplayer clients interpolate/extrapolate Host Santas, with automatic local failover if host stalls
+    // Non-host multiplayer clients follow Host Santas along maze corridors (never straight through walls)
     if (this.isMultiplayer && !this.isHost) {
       const staleMs = Date.now() - this.lastRemoteSantaAtMs;
       if (this.remoteSantaTarget && staleMs < 2400) {
-        const ageSec = Math.min(0.3, Math.max(0, staleMs / 1000));
+        const ageSec = Math.min(0.28, Math.max(0, staleMs / 1000));
         for (let i = 0; i < this.santas.length; i++) {
           const s = this.santas[i];
           const src = i === 0 ? this.remoteSantaTarget : this.remoteSantaTarget.extras?.[i - 1];
-          if (!src) {
+          if (!src || !Number.isFinite(src.x) || !Number.isFinite(src.z)) {
             s.rig.root.position.copy(s.pos);
             s.rig.root.rotation.y = s.yaw;
             s.rig.updateAnimation(nowSec, 0, false, s.stunRemaining);
@@ -1914,12 +1979,61 @@ export class MazeEngine {
           let goalX = src.x;
           let goalZ = src.z;
           if (src.speed > 0.3 && src.stunRemaining <= 0) {
-            goalX += Math.sin(src.yaw) * src.speed * ageSec;
-            goalZ += Math.cos(src.yaw) * src.speed * ageSec;
+            const extX = src.x + Math.sin(src.yaw) * src.speed * ageSec;
+            const extZ = src.z + Math.cos(src.yaw) * src.speed * ageSec;
+            if (hasLineOfSight(this.mazeData.grid, src.x, src.z, extX, extZ, CELL_SIZE)) {
+              goalX = extX;
+              goalZ = extZ;
+            }
           }
-          s.pos.x = THREE.MathUtils.damp(s.pos.x, goalX, 11, dt);
-          s.pos.z = THREE.MathUtils.damp(s.pos.z, goalZ, 11, dt);
-          this.resolveMazeCollisions(s.pos, 0.55);
+
+          const distToGoal = Math.hypot(goalX - s.pos.x, goalZ - s.pos.z);
+          if (distToGoal > 8.5) {
+            s.pos.set(goalX, 0, goalZ);
+            this.resolveMazeCollisions(s.pos, 0.55);
+          } else if (
+            distToGoal > 0.65 &&
+            !hasLineOfSight(this.mazeData.grid, s.pos.x, s.pos.z, goalX, goalZ, CELL_SIZE)
+          ) {
+            const santaCell = this.clampToWalkableCell(
+              worldToCell(s.pos.x, s.pos.z, this.mazeData.size, CELL_SIZE)
+            );
+            const goalCell = this.clampToWalkableCell(
+              worldToCell(goalX, goalZ, this.mazeData.size, CELL_SIZE)
+            );
+            const nextStep = findNextStepBFS(this.mazeData.grid, santaCell, goalCell);
+            let steerX = goalX;
+            let steerZ = goalZ;
+            if (nextStep) {
+              const curW = cellToWorld(santaCell.r, santaCell.c, this.mazeData.size, CELL_SIZE);
+              const nextW = cellToWorld(nextStep.r, nextStep.c, this.mazeData.size, CELL_SIZE);
+              const distToCurCenter = Math.hypot(curW.x - s.pos.x, curW.z - s.pos.z);
+              if (
+                distToCurCenter > 0.5 &&
+                !this.hasClearCorridor(s.pos.x, s.pos.z, nextW.x, nextW.z, 0.58)
+              ) {
+                steerX = curW.x;
+                steerZ = curW.z;
+              } else {
+                steerX = nextW.x;
+                steerZ = nextW.z;
+              }
+            }
+            const sdx = steerX - s.pos.x;
+            const sdz = steerZ - s.pos.z;
+            const sLen = Math.hypot(sdx, sdz);
+            if (sLen > 0.02) {
+              const catchupSpeed = Math.max(src.speed * 1.2, 5.8);
+              const stepDist = Math.min(sLen, catchupSpeed * dt);
+              s.pos.x += (sdx / sLen) * stepDist;
+              s.pos.z += (sdz / sLen) * stepDist;
+            }
+            this.resolveMazeCollisions(s.pos, 0.55);
+          } else {
+            s.pos.x = THREE.MathUtils.damp(s.pos.x, goalX, 12, dt);
+            s.pos.z = THREE.MathUtils.damp(s.pos.z, goalZ, 12, dt);
+            this.resolveMazeCollisions(s.pos, 0.55);
+          }
 
           let deltaAngle = src.yaw - s.yaw;
           while (deltaAngle > Math.PI) deltaAngle -= Math.PI * 2;
@@ -1931,7 +2045,9 @@ export class MazeEngine {
             this.audio.playEvilHoHo(0.7);
           }
           s.alerted = src.alerted;
-          if (src.stunRemaining > 0.2) {
+          if (src.stunRemaining <= 0 && src.speed > 0.35) {
+            s.stunRemaining = 0;
+          } else if (src.stunRemaining > 0.2) {
             s.stunRemaining = src.stunRemaining;
           } else if (s.stunRemaining > 0) {
             s.stunRemaining = Math.max(0, s.stunRemaining - dt);
@@ -1977,6 +2093,8 @@ export class MazeEngine {
     }
 
     for (const s of this.santas) {
+      s.forceBfsTimer = Math.max(0, s.forceBfsTimer - dt);
+
       // Stunned state (30s knockout)
       if (s.stunRemaining > 0) {
         const prevStun = s.stunRemaining;
@@ -1986,6 +2104,8 @@ export class MazeEngine {
         s.velZ = 0;
         s.alerted = false;
         s.stuckTimer = 0;
+        s.stuckCount = 0;
+        s.forceBfsTimer = 0;
 
         if (prevStun > 3.5 && s.stunRemaining <= 3.5) {
           this.showBanner('Santa is stirring... run!', 2.6);
@@ -2062,15 +2182,16 @@ export class MazeEngine {
 
       const rageBoost = 1 + Math.min(4, this.ornamentsCollected) * 0.025;
       const targetSpeed = (s.alerted ? scaling.santaChaseSpeed : scaling.santaBaseSpeed) * rageBoost;
-      s.currentSpeed = THREE.MathUtils.damp(s.currentSpeed, targetSpeed, 5, dt);
+      s.currentSpeed = THREE.MathUtils.damp(s.currentSpeed, targetSpeed, 6, dt);
 
       let moveTargetX = nearestTarget.x;
       let moveTargetZ = nearestTarget.z;
 
       const directCorridorClear =
+        s.forceBfsTimer <= 0 &&
         canSeeAny &&
         distToTarget < 10.5 &&
-        this.hasClearCorridor(s.pos.x, s.pos.z, nearestTarget.x, nearestTarget.z, 0.52);
+        this.hasClearCorridor(s.pos.x, s.pos.z, nearestTarget.x, nearestTarget.z, 0.64);
 
       if (directCorridorClear) {
         moveTargetX = nearestTarget.x;
@@ -2089,29 +2210,56 @@ export class MazeEngine {
           goalCell = this.clampToWalkableCell(s.patrolTarget);
         }
 
-        const nextStep = findNextStepBFS(this.mazeData.grid, santaCell, goalCell);
-        if (nextStep) {
-          const nextW = cellToWorld(nextStep.r, nextStep.c, this.mazeData.size, CELL_SIZE);
-          const curW = cellToWorld(santaCell.r, santaCell.c, this.mazeData.size, CELL_SIZE);
-          const distToCurCenter = Math.hypot(curW.x - s.pos.x, curW.z - s.pos.z);
-
-          // Align toward current corridor center before turning corners so Santa never snags on wall edges
-          if (
-            distToCurCenter > 0.55 &&
-            !this.hasClearCorridor(s.pos.x, s.pos.z, nextW.x, nextW.z, 0.5)
-          ) {
-            moveTargetX = curW.x;
-            moveTargetZ = curW.z;
+        // Guard against stalled goalCell === santaCell
+        if (goalCell.r === santaCell.r && goalCell.c === santaCell.c) {
+          if (s.alerted && canSeeAny) {
+            moveTargetX = nearestTarget.x;
+            moveTargetZ = nearestTarget.z;
           } else {
-            moveTargetX = nextW.x;
-            moveTargetZ = nextW.z;
+            if (s.alerted) {
+              s.alerted = false;
+              s.lastKnownCell = null;
+            }
+            s.patrolTarget = this.pickSpreadPatrolCell(s);
+            goalCell = this.clampToWalkableCell(s.patrolTarget);
           }
-        } else {
-          const neighbor = this.pickOpenNeighborCell(santaCell);
-          const nw = cellToWorld(neighbor.r, neighbor.c, this.mazeData.size, CELL_SIZE);
-          moveTargetX = nw.x;
-          moveTargetZ = nw.z;
-          s.patrolTarget = this.pickSpreadPatrolCell(s);
+        }
+
+        if (!(goalCell.r === santaCell.r && goalCell.c === santaCell.c)) {
+          const path = findPathBFS(this.mazeData.grid, santaCell, goalCell, 6);
+          if (path && path.length > 0) {
+            const p0 = path[0];
+            const p0W = cellToWorld(p0.r, p0.c, this.mazeData.size, CELL_SIZE);
+            const curW = cellToWorld(santaCell.r, santaCell.c, this.mazeData.size, CELL_SIZE);
+            const distToCurCenter = Math.hypot(curW.x - s.pos.x, curW.z - s.pos.z);
+
+            let chosenW = p0W;
+            if (path.length >= 2) {
+              const p1W = cellToWorld(path[1].r, path[1].c, this.mazeData.size, CELL_SIZE);
+              if (this.hasClearCorridor(s.pos.x, s.pos.z, p1W.x, p1W.z, 0.64)) {
+                chosenW = p1W;
+              }
+            }
+
+            // Center toward current cell before turning a sharp corner so Santa never snags on wall edges
+            if (
+              chosenW === p0W &&
+              distToCurCenter > 0.52 &&
+              !this.hasClearCorridor(s.pos.x, s.pos.z, p0W.x, p0W.z, 0.6)
+            ) {
+              moveTargetX = curW.x;
+              moveTargetZ = curW.z;
+            } else {
+              moveTargetX = chosenW.x;
+              moveTargetZ = chosenW.z;
+            }
+          } else {
+            const neighbor = this.pickOpenNeighborCell(santaCell);
+            const nw = cellToWorld(neighbor.r, neighbor.c, this.mazeData.size, CELL_SIZE);
+            moveTargetX = nw.x;
+            moveTargetZ = nw.z;
+            s.patrolTarget = this.pickSpreadPatrolCell(s);
+          }
         }
       }
 
@@ -2122,31 +2270,42 @@ export class MazeEngine {
       if (len > 0.05) {
         const desiredVx = (dx / len) * s.currentSpeed;
         const desiredVz = (dz / len) * s.currentSpeed;
-        s.velX = THREE.MathUtils.damp(s.velX, desiredVx, 5.4, dt);
-        s.velZ = THREE.MathUtils.damp(s.velZ, desiredVz, 5.4, dt);
+        s.velX = THREE.MathUtils.damp(s.velX, desiredVx, 11.5, dt);
+        s.velZ = THREE.MathUtils.damp(s.velZ, desiredVz, 11.5, dt);
 
         s.pos.x += s.velX * dt;
         s.pos.z += s.velZ * dt;
-        this.resolveMazeCollisions(s.pos, 0.55);
+        const santaVel = { vx: s.velX, vz: s.velZ };
+        this.resolveMazeCollisions(s.pos, 0.55, santaVel);
+        s.velX = santaVel.vx;
+        s.velZ = santaVel.vz;
 
-        const desiredYaw = Math.atan2(s.velX, s.velZ);
+        const speedMag = Math.hypot(s.velX, s.velZ);
+        const desiredYaw = speedMag > 0.25 ? Math.atan2(s.velX, s.velZ) : Math.atan2(dx, dz);
         let deltaAngle = desiredYaw - s.yaw;
         while (deltaAngle > Math.PI) deltaAngle -= Math.PI * 2;
         while (deltaAngle < -Math.PI) deltaAngle += Math.PI * 2;
-        s.yaw += deltaAngle * Math.min(1, dt * 6.0);
+        s.yaw += deltaAngle * Math.min(1, dt * 8.0);
       }
 
-      // Stuck watchdog: if Santa stalls against a corner for > 0.65s, center him and pick fresh path
+      // Stuck watchdog: if Santa stalls against a corner for > 0.55s, force BFS and cleanly re-center
       s.stuckTimer += dt;
-      if (s.stuckTimer >= 0.65) {
+      if (s.stuckTimer >= 0.55) {
         const progressed = Math.hypot(
           s.pos.x - s.lastProgressPos.x,
           s.pos.z - s.lastProgressPos.z
         );
-        if (progressed < 0.25 && s.currentSpeed > 0.4) {
+        if (progressed < 0.22 && s.currentSpeed > 0.35) {
+          s.stuckCount += 1;
+          s.forceBfsTimer = 1.4;
           const safeW = cellToWorld(santaCell.r, santaCell.c, this.mazeData.size, CELL_SIZE);
-          s.pos.x = THREE.MathUtils.lerp(s.pos.x, safeW.x, 0.45);
-          s.pos.z = THREE.MathUtils.lerp(s.pos.z, safeW.z, 0.45);
+          if (s.stuckCount >= 2) {
+            s.pos.set(safeW.x, 0, safeW.z);
+            s.stuckCount = 0;
+          } else {
+            s.pos.x = THREE.MathUtils.lerp(s.pos.x, safeW.x, 0.65);
+            s.pos.z = THREE.MathUtils.lerp(s.pos.z, safeW.z, 0.65);
+          }
           s.velX = 0;
           s.velZ = 0;
           s.patrolTarget = this.pickSpreadPatrolCell(s);
@@ -2154,6 +2313,8 @@ export class MazeEngine {
             s.alerted = false;
             s.lastKnownCell = null;
           }
+        } else {
+          s.stuckCount = 0;
         }
         s.lastProgressPos.copy(s.pos);
         s.stuckTimer = 0;
@@ -2162,6 +2323,33 @@ export class MazeEngine {
       s.rig.root.position.copy(s.pos);
       s.rig.root.rotation.y = s.yaw;
       s.rig.updateAnimation(nowSec, s.currentSpeed, s.alerted, 0);
+    }
+
+    // Separate multiple Santas (Lv 50+ / Lv 99) so they don't stack into one mesh
+    if (this.santas.length > 1) {
+      for (let i = 0; i < this.santas.length; i++) {
+        for (let j = i + 1; j < this.santas.length; j++) {
+          const a = this.santas[i];
+          const b = this.santas[j];
+          if (a.stunRemaining > 0 || b.stunRemaining > 0) continue;
+          const sdx = b.pos.x - a.pos.x;
+          const sdz = b.pos.z - a.pos.z;
+          const dist = Math.hypot(sdx, sdz);
+          if (dist < 1.6) {
+            const nx = dist > 0.01 ? sdx / dist : 1;
+            const nz = dist > 0.01 ? sdz / dist : 0;
+            const push = (1.6 - dist) * 0.5;
+            a.pos.x -= nx * push;
+            a.pos.z -= nz * push;
+            b.pos.x += nx * push;
+            b.pos.z += nz * push;
+            this.resolveMazeCollisions(a.pos, 0.55);
+            this.resolveMazeCollisions(b.pos, 0.55);
+            a.rig.root.position.copy(a.pos);
+            b.rig.root.position.copy(b.pos);
+          }
+        }
+      }
     }
 
     if (this.isMultiplayer && this.isHost && performance.now() - this.lastSantaSyncMs > 260) {

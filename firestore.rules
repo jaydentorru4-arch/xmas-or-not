@@ -24,6 +24,12 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == uid;
     }
 
+    function isAdmin() {
+      return isSignedIn()
+        && request.auth.token.email_verified == true
+        && request.auth.token.email == 'jaydentorru4@gmail.com';
+    }
+
     function isValidId(id) {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
@@ -277,14 +283,14 @@ service cloud.firestore {
 
     // Public Survivor Profiles (no PII)
     match /users/{userId}/public/profile {
-      allow get: if isSignedIn() && isValidId(userId);
-      allow list: if false;
-      allow create: if isOwner(userId)
+      allow get: if (isSignedIn() && isValidId(userId)) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if (isOwner(userId)
         && isValidId(userId)
         && isValidPublicProfile(incoming())
         && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time;
-      allow update: if isOwner(userId)
+        && incoming().updatedAt == request.time) || (isAdmin() && isValidId(userId));
+      allow update: if (isOwner(userId)
         && isValidId(userId)
         && isValidPublicProfile(incoming())
         && incoming().uid == existing().uid
@@ -293,34 +299,59 @@ service cloud.firestore {
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'displayName', 'coatColor', 'scarfColor', 'hatStyle',
           'friendCode', 'level', 'xp', 'escapes', 'gamesPlayed', 'updatedAt'
-        ]);
-      allow delete: if false;
+        ])) || (isAdmin() && isValidId(userId));
+      allow delete: if isAdmin() && isValidId(userId);
     }
 
-    // Private PII User Info (owner only)
+    // Private PII User Info (owner or verified admin only)
     match /users/{userId}/private/info {
-      allow get: if isOwner(userId) && isValidId(userId);
-      allow list: if false;
-      allow create: if isOwner(userId)
+      allow get: if (isOwner(userId) && isValidId(userId)) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if (isOwner(userId)
         && isValidId(userId)
         && isValidPrivateInfo(incoming())
         && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time;
-      allow update: if isOwner(userId)
+        && incoming().updatedAt == request.time) || (isAdmin() && isValidId(userId));
+      allow update: if (isOwner(userId)
         && isValidId(userId)
         && isValidPrivateInfo(incoming())
         && incoming().uid == existing().uid
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'updatedAt']);
-      allow delete: if false;
+        && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'updatedAt'])) || (isAdmin() && isValidId(userId));
+      allow delete: if isAdmin() && isValidId(userId);
+    }
+
+    // Collection-group listing for verified admin database mirroring & status inspection
+    match /{path=**}/public/{docId} {
+      allow get, list: if isAdmin();
+    }
+
+    match /{path=**}/info/{docId} {
+      allow get, list: if isAdmin();
+    }
+
+    match /{path=**}/friends/{friendId} {
+      allow get, list: if isAdmin();
+    }
+
+    match /{path=**}/players/{playerId} {
+      allow get, list: if isAdmin();
+    }
+
+    match /{path=**}/santa/{docId} {
+      allow get, list: if isAdmin();
+    }
+
+    match /{path=**}/messages/{messageId} {
+      allow get, list: if isAdmin();
     }
 
     // Friends Subcollection (owner reads/lists own; sender/recipient create/accept/remove)
     match /users/{userId}/friends/{friendId} {
-      allow get: if isOwner(userId) && isValidId(userId) && isValidId(friendId);
-      allow list: if isOwner(userId) && isValidId(userId) && existing().ownerUid == userId;
-      allow create: if isSignedIn()
+      allow get: if (isOwner(userId) && isValidId(userId) && isValidId(friendId)) || isAdmin();
+      allow list: if (isOwner(userId) && isValidId(userId) && existing().ownerUid == userId) || isAdmin();
+      allow create: if (isSignedIn()
         && isValidId(userId)
         && isValidId(friendId)
         && userId != friendId
@@ -333,8 +364,8 @@ service cloud.firestore {
           (request.auth.uid == userId && incoming().status == 'pending_sent')
           ||
           (request.auth.uid == friendId && incoming().status == 'pending_received')
-        );
-      allow update: if isSignedIn()
+        )) || (isAdmin() && isValidId(userId) && isValidId(friendId));
+      allow update: if (isSignedIn()
         && isValidId(userId)
         && isValidId(friendId)
         && isValidFriendRecord(incoming())
@@ -358,50 +389,50 @@ service cloud.firestore {
               'status', 'displayName', 'coatColor', 'scarfColor', 'hatStyle', 'level', 'updatedAt'
             ])
           )
-        );
-      allow delete: if isSignedIn()
+        )) || (isAdmin() && isValidId(userId) && isValidId(friendId));
+      allow delete: if (isSignedIn()
         && isValidId(userId)
         && isValidId(friendId)
-        && (request.auth.uid == userId || request.auth.uid == friendId);
+        && (request.auth.uid == userId || request.auth.uid == friendId)) || isAdmin();
     }
 
     // Short Friend Code Lookup (no PII, get only)
     match /friendCodes/{code} {
-      allow get: if isSignedIn() && isValidFriendCode(code);
-      allow list: if false;
-      allow create: if isSignedIn()
+      allow get: if (isSignedIn() && isValidFriendCode(code)) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if (isSignedIn()
         && isValidFriendCode(code)
         && isValidFriendCodeLookup(incoming())
         && incoming().friendCode == code
-        && incoming().createdAt == request.time;
-      allow update, delete: if false;
+        && incoming().createdAt == request.time) || (isAdmin() && isValidFriendCode(code));
+      allow update, delete: if isAdmin() && isValidFriendCode(code);
     }
 
     // Global Lobby Chat
     match /globalChat/{messageId} {
-      allow get: if isSignedIn() && isValidId(messageId) && existing().channel == 'global';
-      allow list: if isSignedIn() && existing().channel == 'global';
-      allow create: if isSignedIn()
+      allow get: if (isSignedIn() && isValidId(messageId) && existing().channel == 'global') || isAdmin();
+      allow list: if (isSignedIn() && existing().channel == 'global') || isAdmin();
+      allow create: if (isSignedIn()
         && isValidId(messageId)
         && isValidGlobalChatMessage(incoming())
-        && incoming().createdAt == request.time;
-      allow update: if false;
-      allow delete: if isSignedIn() && isValidId(messageId) && existing().channel == 'global';
+        && incoming().createdAt == request.time) || (isAdmin() && isValidId(messageId));
+      allow update: if isAdmin() && isValidId(messageId);
+      allow delete: if (isSignedIn() && isValidId(messageId) && existing().channel == 'global') || isAdmin();
     }
 
     // Multiplayer Rooms
     match /rooms/{roomId} {
-      allow get: if isSignedIn() && isValidId(roomId);
-      allow list: if isSignedIn() && existing().isPublic == true;
-      allow create: if isSignedIn()
+      allow get: if (isSignedIn() && isValidId(roomId)) || isAdmin();
+      allow list: if (isSignedIn() && existing().isPublic == true) || isAdmin();
+      allow create: if (isSignedIn()
         && isValidId(roomId)
         && isValidRoom(incoming())
         && incoming().roomId == roomId
         && incoming().hostId == request.auth.uid
         && incoming().status == 'waiting'
         && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time;
-      allow update: if isSignedIn()
+        && incoming().updatedAt == request.time) || (isAdmin() && isValidId(roomId));
+      allow update: if (isSignedIn()
         && isValidId(roomId)
         && isValidRoom(incoming())
         && existing().status != 'finished'
@@ -450,22 +481,22 @@ service cloud.firestore {
               )
             )
           )
-        );
-      allow delete: if isSignedIn()
+        )) || (isAdmin() && isValidId(roomId));
+      allow delete: if (isSignedIn()
         && isValidId(roomId)
         && (
           existing().hostId == request.auth.uid
           || (existing().playerCount <= 1 && exists(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)))
-        );
+        )) || isAdmin();
 
       // Room Players (Master Gate verifies parent room exists)
       match /players/{playerId} {
-        allow get: if isSignedIn()
+        allow get: if (isSignedIn()
           && isValidId(roomId)
           && isValidId(playerId)
-          && exists(/databases/$(database)/documents/rooms/$(roomId));
-        allow list: if isSignedIn() && existing().roomId == roomId;
-        allow create: if isOwner(playerId)
+          && exists(/databases/$(database)/documents/rooms/$(roomId))) || isAdmin();
+        allow list: if (isSignedIn() && existing().roomId == roomId) || isAdmin();
+        allow create: if (isOwner(playerId)
           && isValidId(roomId)
           && isValidId(playerId)
           && isValidRoomPlayer(incoming())
@@ -474,8 +505,8 @@ service cloud.firestore {
           && incoming().reviveCount == 0
           && incoming().revivedBy == ''
           && incoming().updatedAt == request.time
-          && exists(/databases/$(database)/documents/rooms/$(roomId));
-        allow update: if isSignedIn()
+          && exists(/databases/$(database)/documents/rooms/$(roomId))) || (isAdmin() && isValidId(roomId) && isValidId(playerId));
+        allow update: if (isSignedIn()
           && isValidId(roomId)
           && isValidId(playerId)
           && isValidRoomPlayer(incoming())
@@ -507,45 +538,45 @@ service cloud.firestore {
                 'alive', 'reviveCount', 'revivedBy', 'updatedAt'
               ])
             )
-          );
-        allow delete: if isOwner(playerId) && isValidId(roomId) && isValidId(playerId);
+          )) || (isAdmin() && isValidId(roomId) && isValidId(playerId));
+        allow delete: if (isOwner(playerId) && isValidId(roomId) && isValidId(playerId)) || isAdmin();
       }
 
       // Host-Authoritative Evil Santa Live State
       match /santa/live {
-        allow get: if isSignedIn()
+        allow get: if (isSignedIn()
           && isValidId(roomId)
-          && exists(/databases/$(database)/documents/rooms/$(roomId));
-        allow list: if false;
-        allow create: if isSignedIn()
+          && exists(/databases/$(database)/documents/rooms/$(roomId))) || isAdmin();
+        allow list: if isAdmin();
+        allow create: if (isSignedIn()
           && isValidId(roomId)
           && isValidSantaState(incoming())
           && incoming().updatedAt == request.time
-          && get(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == request.auth.uid;
-        allow update: if isSignedIn()
+          && get(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == request.auth.uid) || (isAdmin() && isValidId(roomId));
+        allow update: if (isSignedIn()
           && isValidId(roomId)
           && isValidSantaState(incoming())
           && incoming().updatedAt == request.time
           && incoming().diff(existing()).affectedKeys().hasOnly(['x', 'z', 'yaw', 'speed', 'alerted', 'stunRemaining', 'extras', 'updatedAt'])
-          && get(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == request.auth.uid;
-        allow delete: if false;
+          && get(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == request.auth.uid) || (isAdmin() && isValidId(roomId));
+        allow delete: if isAdmin() && isValidId(roomId);
       }
 
       // Room-Scoped Live Chat
       match /messages/{messageId} {
-        allow get: if isSignedIn()
+        allow get: if (isSignedIn()
           && isValidId(roomId)
           && isValidId(messageId)
-          && exists(/databases/$(database)/documents/rooms/$(roomId));
-        allow list: if isSignedIn() && existing().roomId == roomId;
-        allow create: if isSignedIn()
+          && exists(/databases/$(database)/documents/rooms/$(roomId))) || isAdmin();
+        allow list: if (isSignedIn() && existing().roomId == roomId) || isAdmin();
+        allow create: if (isSignedIn()
           && isValidId(roomId)
           && isValidId(messageId)
           && isValidRoomChatMessage(incoming())
           && incoming().roomId == roomId
           && incoming().createdAt == request.time
-          && exists(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid));
-        allow update, delete: if false;
+          && exists(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid))) || (isAdmin() && isValidId(roomId) && isValidId(messageId));
+        allow update, delete: if isAdmin() && isValidId(roomId) && isValidId(messageId);
       }
     }
   }
