@@ -579,7 +579,16 @@ async function startServer(): Promise<void> {
     });
   }
 
-  const port = Number(process.env.PORT || 3000);
+  const portArgIdx = process.argv.findIndex((arg) => arg === '--port' || arg.startsWith('--port='));
+  let cliPort: number | undefined;
+  if (portArgIdx >= 0) {
+    const rawPort = process.argv[portArgIdx].startsWith('--port=')
+      ? process.argv[portArgIdx].split('=')[1]
+      : process.argv[portArgIdx + 1];
+    const parsed = Number(rawPort);
+    if (Number.isFinite(parsed) && parsed > 0) cliPort = parsed;
+  }
+  const port = cliPort || Number(process.env.PORT || 3000);
   app.listen(port, '0.0.0.0', () => {
     console.log(`Hollow Eve server listening on http://0.0.0.0:${port}`);
   });

@@ -34,6 +34,7 @@ import {
   authedApiFetch,
   DbApiError,
   ensureActiveDatabaseLoaded,
+  getBackendStatus,
   getCachedActiveDatabase,
   trackAiSharedClientOp,
 } from './databaseAdmin';
@@ -391,6 +392,13 @@ export async function loadOrCreateSurvivorProfile(user: User): Promise<SurvivorP
   );
 
   if (useDefaultProxy()) {
+    if (getBackendStatus() !== 'available') {
+      throw new DbApiError(
+        'Database API server is not reachable on this URL. Refresh the page or start the full-stack server.',
+        503,
+        'BACKEND_UNAVAILABLE'
+      );
+    }
     try {
       return await authedApiFetch<SurvivorProfile>('/api/db/profile/ensure', {
         method: 'POST',

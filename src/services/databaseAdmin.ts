@@ -120,8 +120,13 @@ export class DbApiError extends Error {
   }
 }
 
+export type BackendStatus = 'unknown' | 'available' | 'unavailable';
+
 let cachedActiveDb: DatabaseId = 'default';
 let cachedLastSwitchAt: string | null = null;
+let backendStatus: BackendStatus = 'unknown';
+let cachedIsAdmin = false;
+let lastCheckedUid: string | null = null;
 let initPromise: Promise<DatabaseId> | null = null;
 let streamStarted = false;
 const activeDbWatchers = new Set<(dbId: DatabaseId, switchedAt: string | null) => void>();
@@ -132,6 +137,10 @@ export function getCachedActiveDatabase(): DatabaseId {
 
 export function getCachedLastSwitchAt(): string | null {
   return cachedLastSwitchAt;
+}
+
+export function getBackendStatus(): BackendStatus {
+  return backendStatus;
 }
 
 function notifyActiveDbWatchers(nextDb: DatabaseId, switchedAt: string | null): void {
@@ -153,14 +162,23 @@ export function subscribeActiveDatabase(
   cb: (dbId: DatabaseId, switchedAt: string | null) => void
 ): () => void {
   activeDbWatchers.add(cb);
-  ensureActiveDbStream();
+  if (backendStatus === 'available') {
+    ensureActiveDbStream();
+  }
   return () => {
     activeDbWatchers.delete(cb);
   };
 }
 
 function ensureActiveDbStream(): void {
-  if (streamStarted || typeof window === 'undefined' || typeof EventSource === 'undefined') return;
+  if (
+    backendStatus !== 'available' ||
+    streamStarted ||
+    typeof window === 'undefined' ||
+    typeof EventSource === 'undefined'
+  ) {
+    return;
+  }
   streamStarted = true;
   try {
     const es = new EventSource('/api/database/stream');
@@ -186,35 +204,57 @@ function ensureActiveDbStream(): void {
   }
 }
 
-export async function ensureActiveDatabaseLoaded(): Promise<DatabaseId> {
-  if (initPromise) return initPromise;
-  initPromise = (async () => {
+export async function ensureActiveDatabaseLoaded(forceRefresh = false): Promise<DatabaseId> {
+  if (initPromise && !forceRefresh) return initPromise;
+  const run = (async () => {
     try {
+      const currentUid = auth.currentUser?.uid || null;
       const token = await auth.currentUser?.getIdToken().catch(() => undefined);
       const res = await fetch('/api/database/active', {
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       });
       if (res.ok) {
+        backendStatus = 'available';
         const data = (await res.json()) as {
           activeDatabase?: DatabaseId;
           lastSwitchAt?: string | null;
+          isAdmin?: boolean;
         };
         const dbId: DatabaseId = data.activeDatabase === 'ai_shared' ? 'ai_shared' : 'default';
+        cachedIsAdmin = Boolean(data.isAdmin);
+        lastCheckedUid = currentUid;
         notifyActiveDbWatchers(dbId, data.lastSwitchAt || null);
+        ensureActiveDbStream();
+      } else {
+        backendStatus = 'unavailable';
+        initPromise = null;
       }
     } catch {
-      // keep default database fallback
+      backendStatus = 'unavailable';
+      initPromise = null;
     }
-    ensureActiveDbStream();
     return cachedActiveDb;
   })();
-  return initPromise;
+  initPromise = run;
+  return run;
 }
 
 export async function checkServerIsAdmin(): Promise<boolean> {
   try {
-    const token = await auth.currentUser?.getIdToken();
-    if (!token) return false;
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      cachedIsAdmin = false;
+      lastCheckedUid = null;
+      return false;
+    }
+    await ensureActiveDatabaseLoaded(backendStatus !== 'available');
+    if (backendStatus !== 'available') {
+      return false;
+    }
+    if (lastCheckedUid === currentUser.uid) {
+      return cachedIsAdmin;
+    }
+    const token = await currentUser.getIdToken();
     const res = await fetch('/api/database/active', {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -227,7 +267,9 @@ export async function checkServerIsAdmin(): Promise<boolean> {
     if (data.activeDatabase === 'default' || data.activeDatabase === 'ai_shared') {
       notifyActiveDbWatchers(data.activeDatabase, data.lastSwitchAt || null);
     }
-    return Boolean(data.isAdmin);
+    cachedIsAdmin = Boolean(data.isAdmin);
+    lastCheckedUid = currentUser.uid;
+    return cachedIsAdmin;
   } catch {
     return false;
   }
