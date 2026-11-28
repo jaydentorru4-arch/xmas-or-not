@@ -93,7 +93,7 @@ function sendError(res: Response, err: unknown, fallbackStatus = 500): void {
   res.status(fallbackStatus).json({ error: raw || 'Unexpected server error.' });
 }
 
-async function startServer(): Promise<void> {
+export async function createApp(): Promise<express.Express> {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '1mb' }));
@@ -579,6 +579,12 @@ async function startServer(): Promise<void> {
     });
   }
 
+
+  return app;
+}
+
+async function startServer(): Promise<void> {
+  const app = await createApp();
   const portArgIdx = process.argv.findIndex((arg) => arg === '--port' || arg.startsWith('--port='));
   let cliPort: number | undefined;
   if (portArgIdx >= 0) {
@@ -594,4 +600,9 @@ async function startServer(): Promise<void> {
   });
 }
 
-void startServer();
+// Vercel imports createApp() from api/[...path].ts. Do not start a second
+// listener inside a serverless function. Local development still starts the
+// persistent Express server through the existing npm run dev script.
+if (process.env.VERCEL !== '1') {
+  void startServer();
+}
